@@ -38,6 +38,19 @@ int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* t
 	return 1;
 }
 
+/**
+ * Sends a request to the Videx HTTP server and aims to return an integer value.
+ * If the response is successful (code=200), it extracts the integer value from `response_json["value"]`.
+ *
+ * @param request The VidexJsonItem object containing the request data.
+ * @param result_str Reference to the string where the result value will be stored.
+ * @param thd Pointer to the current thread's THD object.
+ * @return 0 if the request is successful, 1 otherwise.
+ */
+ int ask_from_videx_http(VidexJsonItem &request, std::string& result_str, THD * thd){
+		return 1;
+}
+
 static handler *videx_create_handler(handlerton *hton, TABLE_SHARE *table, MEM_ROOT *mem_root);
 
 handlerton *videx_hton;
@@ -57,20 +70,34 @@ videx_share::videx_share()
 	mysql_mutex_init(ex_key_mutex_videx_share_mutex, &mutex, MY_MUTEX_INIT_FAST);
 }
 
+static void videx_update_optimizer_costs(OPTIMIZER_COSTS *costs)
+{
+  /*
+    The following number was found by check_costs.pl when using 1M rows
+    and all rows are cached. See optimizer_costs.txt for details
+  */
+  costs->row_next_find_cost= 0.00007013;
+  costs->row_lookup_cost=    0.00076597;
+  costs->key_next_find_cost= 0.00009900;
+  costs->key_lookup_cost=    0.00079112;
+  costs->row_copy_cost=      0.00006087;
+}
+
 static int videx_init(void *p)
 {
 	DBUG_ENTER("videx_init");
 
 	videx_hton= static_cast<handlerton*>(p);
-	videx_hton_ptr= videx_hton;
 
-	
+	videx_hton->db_type= DB_TYPE_VIDEX;
 	videx_hton->create=  videx_create_handler;
 	videx_hton->flags= HTON_SUPPORTS_EXTENDED_KEYS | HTON_SUPPORTS_FOREIGN_KEYS |
 		HTON_NATIVE_SYS_VERSIONING | HTON_WSREP_REPLICATION |
 			HTON_REQUIRES_CLOSE_AFTER_TRUNCATE | HTON_TRUNCATE_REQUIRES_EXCLUSIVE_USE | HTON_REQUIRES_NOTIFY_TABLEDEF_CHANGED_AFTER_COMMIT;
 
+	videx_hton->update_optimizer_costs = videx_update_optimizer_costs;
 	videx_hton->tablefile_extensions= ha_videx_exts;
+
 	DBUG_RETURN(0);
 }
 
@@ -762,14 +789,37 @@ THR_LOCK_DATA **ha_videx::store_lock(THD *thd,
 	@see
 	check_quick_keys() in opt_range.cc
 */
-ha_rows ha_videx::records_in_range(uint inx,
+ha_rows ha_videx::records_in_range(uint keynr,
                                      const key_range *min_key,
                                      const key_range *max_key,
                                      page_range *pages)
 {
 	DBUG_ENTER("ha_videx::records_in_range");
-	// TODO:
-	DBUG_RETURN(10);                         // low number to force index usage
+	KEY *key;
+	active_index = keynr;
+	key = table->key_info + active_index;
+
+	VidexJsonItem request_item = construct_request(table->s->db.str, table->s->table_name.str, __PRETTY_FUNCTION__);
+
+	std::string n_rows_str;
+	ha_rows n_rows = 1;
+	THD* thd = ha_thd();
+  	int error = ask_from_videx_http(request_item, n_rows_str, thd);
+	if (error) {
+		// Mock data
+		VidexStringMap res_json;
+		res_json["customer #@# CUSTOMER_FK1"] = "58";
+		res_json["customer #@# idx_customer_nationkey_mktsegment"] = "11";
+		res_json["orders #@# idx_orders_status_date"] = "500";
+
+		std::string concat_n_rows = std::string(table->s->table_name.str) + " #@# " + std::string(key->name.str);
+		n_rows = std::stoull(res_json[concat_n_rows]);
+	}
+	else {
+		n_rows = std::stoull(n_rows_str);
+	}
+
+	DBUG_RETURN(n_rows);
 }
 
 ha_rows ha_videx::estimate_rows_upper_bound()
@@ -951,14 +1001,31 @@ int ha_videx::info_low(uint flag, bool is_analyze)
   		std::cout << "ask_from_videx_http failed, using default values" << std::endl;
   		// Set default values when HTTP request fails
 
-		// nation table
-  		res_json["nation #@# stat_n_rows"] = "25";
-		res_json["nation #@# data_file_length"] = "16384";
-		res_json["nation #@# index_file_length"] = "16384";
-  		res_json["nation #@# data_free_length"] = "0";
-		res_json["nation #@# rec_per_key #@# PRIMARY #@# N_NATIONKEY"] = "1";
-		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_REGIONKEY"] = "5";
-		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_NATIONKEY"] = "1";
+		// supplier table
+		res_json["supplier #@# stat_n_rows"] = "100";
+		res_json["supplier #@# data_file_length"] = "49152";
+		res_json["supplier #@# index_file_length"] = "32768";
+  		res_json["supplier #@# data_free_length"] = "0";
+		res_json["supplier #@# rec_per_key #@# PRIMARY #@# S_SUPPKEY"] = "1";
+		res_json["supplier #@# rec_per_key #@# SUPPLIER_FK1 #@# S_NATIONKEY"] = "4";
+		res_json["supplier #@# rec_per_key #@# SUPPLIER_FK1 #@# S_SUPPKEY"] = "1";
+		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_NATIONKEY"] = "4";
+		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_SUPPKEY"] = "1";
+		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_NAME"] = "1";
+
+		// lineitem table
+		res_json["lineitem #@# stat_n_rows"] = "56251";
+		res_json["lineitem #@# data_file_length"] = "8929280";
+		res_json["lineitem #@# index_file_length"] = "5816320";
+  		res_json["lineitem #@# data_free_length"] = "0";
+		res_json["lineitem #@# rec_per_key #@# PRIMARY #@# L_ID"] = "1";
+		res_json["lineitem #@# rec_per_key #@# LINEITEM_UK1 #@# L_ORDERKEY"] = "1";
+		res_json["lineitem #@# rec_per_key #@# LINEITEM_UK1 #@# L_LINENUMBER"] = "1";
+		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK1 #@# L_ORDERKEY"] = "1";
+		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK1 #@# L_ID"] = "1";
+		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_PARTKEY"] = "1";
+		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_SUPPKEY"] = "1";
+		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_ID"] = "1";
 
 		// orders table
 		res_json["orders #@# stat_n_rows"] = "14907";
@@ -968,6 +1035,18 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 		res_json["orders #@# rec_per_key #@# PRIMARY #@# O_ORDERKEY"] = "1";
 		res_json["orders #@# rec_per_key #@# ORDERS_FK1 #@# O_CUSTKEY"] = "1";
 		res_json["orders #@# rec_per_key #@# ORDERS_FK1 #@# O_ORDERKEY"] = "1";
+		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERSTATUS"] = "4969";
+		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERDATE"] = "5";
+		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERKEY"] = "1";
+
+		// nation table
+  		res_json["nation #@# stat_n_rows"] = "25";
+		res_json["nation #@# data_file_length"] = "16384";
+		res_json["nation #@# index_file_length"] = "16384";
+  		res_json["nation #@# data_free_length"] = "0";
+		res_json["nation #@# rec_per_key #@# PRIMARY #@# N_NATIONKEY"] = "1";
+		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_REGIONKEY"] = "5";
+		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_NATIONKEY"] = "1";
 
 		// customer table
 		res_json["customer #@# stat_n_rows"] = "1545";
@@ -1463,11 +1542,7 @@ static struct st_mysql_show_var func_status[]=
 struct st_mysql_daemon unusable_videx=
 { MYSQL_DAEMON_INTERFACE_VERSION };
 
-#ifdef STATIC_VIDEX
-maria_declare_plugin(videx_static)
-#else
 maria_declare_plugin(videx)
-#endif
 {
 	MYSQL_STORAGE_ENGINE_PLUGIN,
 	&videx_storage_engine,
