@@ -800,6 +800,7 @@ ha_rows ha_videx::records_in_range(uint keynr,
 	key = table->key_info + active_index;
 
 	VidexJsonItem request_item = construct_request(table->s->db.str, table->s->table_name.str, __PRETTY_FUNCTION__);
+	// videx_log_ins.markRecordInRange(FUNC_FILE_LINE, min_key, max_key, key, &request_item);
 
 	std::string n_rows_str;
 	ha_rows n_rows = 1;
@@ -811,6 +812,7 @@ ha_rows ha_videx::records_in_range(uint keynr,
 		res_json["customer #@# CUSTOMER_FK1"] = "58";
 		res_json["customer #@# idx_customer_nationkey_mktsegment"] = "11";
 		res_json["orders #@# idx_orders_status_date"] = "500";
+		res_json["orders #@# idx_orders_orderstatus_orderkey"] = "7362";
 
 		std::string concat_n_rows = std::string(table->s->table_name.str) + " #@# " + std::string(key->name.str);
 		n_rows = std::stoull(res_json[concat_n_rows]);
@@ -1028,7 +1030,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_ID"] = "1";
 
 		// orders table
-		res_json["orders #@# stat_n_rows"] = "14907";
+		res_json["orders #@# stat_n_rows"] = "14919";
 		res_json["orders #@# data_file_length"] = "2637824";
 		res_json["orders #@# index_file_length"] = "245760";
   		res_json["orders #@# data_free_length"] = "0";

@@ -38,7 +38,7 @@ INCLUDE_DIRECTORIES(
 
 SET(VIDEX_SOURCES
         videx_json_item.cc
-        # videx_log_utils.cc
+#        videx_log_utils.cc
         ha_videx.cc
 )
 

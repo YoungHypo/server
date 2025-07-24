@@ -5111,18 +5111,22 @@ columns are not yet indexed.
 */
 void ha_innobase::column_bitmaps_signal()
 {
+  DBUG_ENTER("ha_innobase::column_bitmaps_signal");
   if (!table->vfield || table->current_lock != F_WRLCK)
-    return;
+  	DBUG_PRINT("ha_innobase::column_bitmaps_signal", ("table->vfield is null or table->current_lock is not F_WRLCK"));
+    DBUG_VOID_RETURN;
 
   dict_index_t* clust_index= dict_table_get_first_index(m_prebuilt->table);
   if (!clust_index->online_log)
-    return;
+    DBUG_PRINT("ha_innobase::column_bitmaps_signal", ("online_log is false"));
+    DBUG_VOID_RETURN;
 
   uint num_v= 0;
   for (uint j = 0; j < table->s->virtual_fields; j++)
   {
     if (table->vfield[j]->stored_in_db())
-      continue;
+      DBUG_PRINT("ha_innobase::column_bitmaps_signal", ("table->vfield[%u] is stored in db", j));
+      DBUG_VOID_RETURN;
 
     dict_col_t *col= &m_prebuilt->table->v_cols[num_v].m_col;
     if (col->ord_part ||
@@ -5131,6 +5135,8 @@ void ha_innobase::column_bitmaps_signal()
       table->mark_virtual_column_with_deps(table->vfield[j]);
     num_v++;
   }
+  DBUG_PRINT("ha_innobase::column_bitmaps_signal", ("ready to return"));
+  DBUG_VOID_RETURN;
 }
 
 
@@ -14320,7 +14326,7 @@ ha_innobase::records_in_range(
 	page_cur_mode_t	mode2;
 	mem_heap_t*	heap;
 
-	DBUG_ENTER("records_in_range");
+	DBUG_ENTER("ha_innobase::records_in_range");
 
 	ut_ad(m_prebuilt->trx == thd_to_trx(ha_thd()));
 
@@ -14329,6 +14335,16 @@ ha_innobase::records_in_range(
 	active_index = keynr;
 
 	key = table->key_info + active_index;
+	DBUG_PRINT("ha_innobase::records_in_range", ("key: %s", key->name.str));
+	if (min_key) {
+		DBUG_PRINT("ha_innobase::records_in_range", ("min_key: ptr=%p, length=%d", min_key->key, min_key->length));
+	}
+	if (max_key) {
+		DBUG_PRINT("ha_innobase::records_in_range", ("max_key: ptr=%p, length=%d", max_key->key, max_key->length));
+	}
+
+	std::string concat_n_rows = std::string(table->s->table_name.str) + " #@# " + std::string(key->name.str);
+	DBUG_PRINT("ha_innobase::records_in_range", ("concat_n_rows: %s", concat_n_rows.c_str()));
 
 	index = innobase_get_index(keynr);
 
@@ -14419,6 +14435,7 @@ unsupported:
 	mem_heap_free(heap);
 func_exit:
 	m_prebuilt->trx->op_info = "";
+	DBUG_PRINT("ha_innobase::records_in_range", ("n_rows: %llu", n_rows));
 	DBUG_RETURN((ha_rows) n_rows);
 }
 
@@ -14782,7 +14799,7 @@ ha_innobase::info_low(
 	char		path[FN_REFLEN];
 	os_file_stat_t	stat_info;
 
-	DBUG_ENTER("info");
+	DBUG_ENTER("ha_innobase::info");
 
 	DEBUG_SYNC_C("ha_innobase_info_low");
 
@@ -14904,6 +14921,8 @@ stats_fetch:
 			ib_table->stats_shared_unlock();
 		}
 
+		DBUG_PRINT("info", ("n_rows: %lu", n_rows));
+
 		/*
 		The MySQL optimizer seems to assume in a left join that n_rows
 		is an accurate estimate if it is zero. Of course, it is not,
@@ -14939,18 +14958,25 @@ stats_fetch:
 		stats.deleted = 0;
 		if (fil_space_t* space = ib_table->space) {
 			const ulint size = space->physical_size();
+			std::string concat_data_file_length = std::string(table->s->table_name.str) + " #@# data_file_length";
+			std::string concat_index_file_length = std::string(table->s->table_name.str) + " #@# index_file_length";
+			DBUG_PRINT("info", ("concat_data_file_length: %s", concat_data_file_length.c_str()));
+			DBUG_PRINT("info", ("concat_index_file_length: %s", concat_index_file_length.c_str()));
 			stats.data_file_length
 				= ulonglong(stat_clustered_index_size)
 				* size;
+		        DBUG_PRINT("info", ("data_size: %llu", stats.data_file_length));
 			stats.index_file_length
 				= ulonglong(stat_sum_of_other_index_sizes)
 				* size;
+		        DBUG_PRINT("info", ("index_size: %llu", stats.index_file_length));
 			if (flag & HA_STATUS_VARIABLE_EXTRA) {
 				space->s_lock();
 				stats.delete_length = 1024
 					* fsp_get_available_space_in_free_extents(
 					*space);
 				space->s_unlock();
+				DBUG_PRINT("info", ("delete_length: %llu", stats.delete_length));
 			}
 		}
 		stats.check_time = 0;
@@ -15084,6 +15110,9 @@ stats_fetch:
 				index->table->stat_n_rows could have been
 				calculated at different time. This is
 				acceptable. */
+				
+				std::string concat_key = std::string(table->s->table_name.str) + " #@# rec_per_key #@# " + key->name.str + " #@# " + key->key_part[j].field->field_name.str;
+				DBUG_PRINT("innodb", ("concat_key: %s", concat_key.c_str()));
 
 				ulong	rec_per_key_int = static_cast<ulong>(
 					innodb_rec_per_key(index, j,
@@ -15094,6 +15123,7 @@ stats_fetch:
 				}
 
 				key->rec_per_key[j] = rec_per_key_int;
+				DBUG_PRINT("info", ("key->rec_per_key[%lu]: %lu", j, rec_per_key_int));
 			}
 		}
 	}

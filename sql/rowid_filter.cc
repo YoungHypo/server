@@ -133,6 +133,7 @@ void Range_rowid_filter_cost_info::init(Rowid_filter_container_type cont_type,
   rowid_compare_cost= (ROWID_FILTER_PER_ELEMENT_MODIFIER *
                        tab->file->ROWID_COMPARE_COST);
   selectivity= est_elements/((double) table->stat_records());
+  DBUG_PRINT("rowid_filter::init", ("est_elements: %llu, stat_records: %llu, selectivity: %f", est_elements, table->stat_records(), selectivity));
   gain= avg_access_and_eval_gain_per_row(container_type,
                                          tab->file->ROW_LOOKUP_COST);
   if (gain > 0)

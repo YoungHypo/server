@@ -192,8 +192,6 @@ std::string haRKeyFunctionToSymbol(ha_rkey_function function) {
             return "HA_READ_MBR_DISJOINT";
         case HA_READ_MBR_EQUAL:
             return "HA_READ_MBR_EQUAL";
-        case HA_READ_INVALID:
-            return "HA_READ_INVALID";
         default:
             return "Unknown ha_rkey_function";
     }
@@ -340,9 +338,7 @@ void subha_parse_key_range(key_range *key_range, KEY *index,
     //  ");
 }
 
-void VidexLogUtils::markRecordInRange([[maybe_unused]]const std::string &func, [[maybe_unused]]const std::string &file,
-                                       [[maybe_unused]]const int line, key_range *min_key, key_range *max_key,
-                                       KEY *key, VidexJsonItem *req_json) {
+void VidexLogUtils::markRecordInRange(const std::string &func, key_range *min_key, key_range *max_key, KEY *key, VidexJsonItem *req_json) {
     String range_info;
     range_info.set_charset(system_charset_info);
 
@@ -358,8 +354,6 @@ void VidexLogUtils::markRecordInRange([[maybe_unused]]const std::string &func, [
 
     std::stringstream ss;
     ss << "KEY: " << key->name << "   MIN_KEY: {" << std_info_min << "}, MAX_KEY: {"<<std_info_max << "}";
-    // ss.write(std_info_min.c_str(), std_info_min.length());
-    // ss.write(std_info_max.c_str(), std_info_max.length());
 
     std::cout << std::endl << ss.str() << std::endl;
 
