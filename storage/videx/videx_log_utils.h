@@ -23,19 +23,22 @@
 #ifndef VIDEX_LOG_UTILS
 #define VIDEX_LOG_UTILS
 
+#include <my_global.h>
 #include <unordered_map>
+#include <vector>
 #include <iostream>
 #include <sstream>
-#include <my_base.h>
-#include "sql/key.h"
-#include "sql_string.h"
 #include <string>
-#include "join_optimizer/bit_utils.h"
-#include "sql/current_thd.h"
-#include "sql/field.h"
-#include "sql/item_func.h"
-#include "sql/sql_class.h"
+#include <my_base.h>
+#include <key.h>
+#include <structs.h>
+#include <field.h>
+#include <table.h>
+#include <mysqld.h>
 #include "videx_json_item.h"
+
+// Forward declaration
+class THD;
 
 #define FUNC_FILE_LINE __PRETTY_FUNCTION__, __FILE__, __LINE__
 
@@ -99,7 +102,7 @@ public:
     }
 
     void markRecordInRange([[maybe_unused]]const std::string &func, [[maybe_unused]]const std::string &file,
-                           [[maybe_unused]]const int line, key_range *min_key, key_range *max_key,
+                           [[maybe_unused]]const int line, const key_range *min_key, const key_range *max_key,
                            KEY *key, VidexJsonItem *req_json);
 };
 

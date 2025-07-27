@@ -800,7 +800,7 @@ ha_rows ha_videx::records_in_range(uint keynr,
 	key = table->key_info + active_index;
 
 	VidexJsonItem request_item = construct_request(table->s->db.str, table->s->table_name.str, __PRETTY_FUNCTION__);
-	// videx_log_ins.markRecordInRange(FUNC_FILE_LINE, min_key, max_key, key, &request_item);
+	videx_log_ins.markRecordInRange(FUNC_FILE_LINE, min_key, max_key, key, &request_item);
 
 	std::string n_rows_str;
 	ha_rows n_rows = 1;
@@ -815,7 +815,9 @@ ha_rows ha_videx::records_in_range(uint keynr,
 		res_json["orders #@# idx_orders_orderstatus_orderkey"] = "7362";
 
 		std::string concat_n_rows = std::string(table->s->table_name.str) + " #@# " + std::string(key->name.str);
+		DBUG_PRINT("videx", ("concat_n_rows: %s", concat_n_rows.c_str()));
 		n_rows = std::stoull(res_json[concat_n_rows]);
+		DBUG_PRINT("videx", ("n_rows: %llu", n_rows));
 	}
 	else {
 		n_rows = std::stoull(n_rows_str);
@@ -1405,6 +1407,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 		        	rec_per_key_int = 1;
 		        }
 			    key->rec_per_key[j] = rec_per_key_int;
+				DBUG_PRINT("videx", ("concat_key: %s", concat_key.c_str()));
 				DBUG_PRINT("videx", ("key->rec_per_key[%lu]: %lu", j, key->rec_per_key[j]));
 			}
 		}

@@ -21,6 +21,12 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "videx_log_utils.h"
+#include <mysql/service_thd_alloc.h>
+
+// MariaDB 11.0 does not support functional indexes, so we directly return the field name
+const char *get_field_name_or_expression(THD *, const Field *field) {
+    return field->field_name.str;
+}
 
 VidexLogUtils videx_log_ins;
 void VidexLogUtils::markPassbyUnexpected(const std::string &func,
@@ -68,15 +74,18 @@ void VidexLogUtils::markHaFuncPassby(const std::string &func,
   @param[in]  key          Key tuple
 */
 void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
-                           const uchar *key) {
+                           const uchar *uchar_key) {
     Field *field = key_part->field;
-    if (field->is_array()) {
-        field = down_cast<Field_typed_array *>(field)->get_conv_field();
-    }
 
-    if (field->is_flag_set(BLOB_FLAG)) {
+    // MariaDB 11.0 does not support Field_typed_array and multi-valued indexes
+    // original MySQL code:
+    // if (field->is_array()) {
+    //     field = down_cast<Field_typed_array *>(field)->get_conv_field();
+    // }
+
+    if (field->flags & BLOB_FLAG) {
         // Byte 0 of a nullable key is the null-byte. If set, key is NULL.
-        if (field->is_nullable() && *key) {
+        if (field->maybe_null() && *uchar_key) {
           out->append(STRING_WITH_LEN("NULL"));
           return;
         }
@@ -93,17 +102,17 @@ void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
 
     uint store_length = key_part->store_length;
 
-    if (field->is_nullable()) {
+    if (field->maybe_null()) {
         /*
           Byte 0 of key is the null-byte. If set, key is NULL.
           Otherwise, print the key value starting immediately after the
           null-byte
         */
-        if (*key) {
+        if (*uchar_key) {
             out->append(STRING_WITH_LEN("NULL"));
             return;
         }
-        key++;  // Skip null byte
+        uchar_key++;  // Skip null byte
         store_length--;
     }
 
@@ -114,10 +123,10 @@ void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
     */
     if (field->result_type() == STRING_RESULT &&
         field->charset() == &my_charset_bin) {
-        out->append("0x");
+        out->append(STRING_WITH_LEN("0x"));
         for (uint i = 0; i < store_length; i++) {
-            out->append(_dig_vec_lower[*(key + i) >> 4]);
-            out->append(_dig_vec_lower[*(key + i) & 0x0F]);
+            out->append(_dig_vec_lower[*(uchar_key + i) >> 4]);
+            out->append(_dig_vec_lower[*(uchar_key + i) & 0x0F]);
         }
         return;
     }
@@ -126,11 +135,11 @@ void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
     bool add_quotes = field->result_type() == STRING_RESULT;
 
     TABLE *table = field->table;
-    my_bitmap_map *old_sets[2];
+    MY_BITMAP *old_sets[2];
 
-    dbug_tmp_use_all_columns(table, old_sets, table->read_set, table->write_set);
+    dbug_tmp_use_all_columns(table, old_sets, &table->read_set, &table->write_set);
 
-    field->set_key_image(key, key_part->length);
+    field->set_key_image(uchar_key, key_part->length);
     if (field->type() == MYSQL_TYPE_BIT) {
         (void)field->val_int_as_str(&tmp, true);  // may change tmp's charset
         add_quotes = false;
@@ -138,24 +147,25 @@ void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
         field->val_str(&tmp);  // may change tmp's charset
     }
 
-    dbug_tmp_restore_column_maps(table->read_set, table->write_set, old_sets);
+    dbug_tmp_restore_column_maps(&table->read_set, &table->write_set, old_sets);
 
     if (add_quotes) {
         out->append('\'');
         // Worst case: Every character is escaped.
         const size_t buffer_size = tmp.length() * 2 + 1;
-        char *quoted_string = current_thd->mem_root->ArrayAlloc<char>(buffer_size);
+        char *quoted_string = (char*)thd_alloc(current_thd, buffer_size);
         // char *quoted_string = new char[buffer_size];
+
+        my_bool overflow;
         const size_t quoted_length = escape_string_for_mysql(
-                tmp.charset(), quoted_string, buffer_size, tmp.ptr(), tmp.length());
-        if (quoted_length == static_cast<size_t>(-1)) {
+                tmp.charset(), quoted_string, buffer_size, tmp.ptr(), tmp.length(), &overflow);
+        if (overflow) {
             // Overflow. Our worst case estimate for the buffer size was too low.
             assert(false);
             return;
         }
         out->append(quoted_string, quoted_length, tmp.charset());
         out->append('\'');
-        // delete[] quoted_string;
     } else {
         out->append(tmp.ptr(), tmp.length(), tmp.charset());
     }
@@ -198,11 +208,9 @@ std::string haRKeyFunctionToSymbol(ha_rkey_function function) {
 }
 
 inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
-                               const uchar *min_key,
+                               const uchar *uchar_key,
                                const uint, VidexJsonItem* range_json) {
-    //   const char *sep = "__#@#__";
-    const char *sep = "  ";
-    if (out->length() > 0) out->append(sep);
+    if (out->length() > 0) out->append(STRING_WITH_LEN("  "));
     String tmp_str;
     tmp_str.set_charset(system_charset_info);
     tmp_str.length(0);
@@ -217,14 +225,16 @@ inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
     //     */
     //     out->append(key_part->field->field_name);
     //     out->append(STRING_WITH_LEN(" "));
-    //     subha_print_key_value(out, key_part, min_key);
+    //     subha_print_key_value(out, key_part, uchar_key);
     //     return;
     //   }
 
     // Range scans over multi-valued indexes use a sequence of MEMBER OF
     // predicates ORed together.
+    // MariaDB 11.0 does not support typed arrays
+    /*
     if (key_part->field->is_array()) {
-        videx_print_key_value(&tmp_str, key_part, min_key);
+        videx_print_key_value(&tmp_str, key_part, uchar_key);
         out->append(tmp_str);
         ss.write(tmp_str.ptr(), tmp_str.length());
         range_json->add_property("value", ss.str());
@@ -241,31 +251,32 @@ inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
         range_json->add_property("special_operator", "MEMBER OF");
         return;
     }
+    */
 
     //   if (!Overlaps(flag, NO_MIN_RANGE | NO_MAX_RANGE | NEAR_MIN | NEAR_MAX) &&
-    //       range_is_equality(min_key, max_key, key_part->store_length,
-    //                         key_part->field->is_nullable())) {
+    //       range_is_equality(uchar_key, max_key, key_part->store_length,
+    //                         key_part->field->maybe_null())) {
     //     out->append(get_field_name_or_expression(current_thd,
     //     key_part->field)); out->append(STRING_WITH_LEN(" = "));
-    //     subha_print_key_value(out, key_part, min_key);
+    //     subha_print_key_value(out, key_part, uchar_key);
     //     return;
     //   }
 
     const char * field_or_expr = get_field_name_or_expression(current_thd, key_part->field);
-    out->append(field_or_expr);
+    out->append(field_or_expr, strlen(field_or_expr));
     range_json->add_property("column", field_or_expr);
 
-    out->append("(");
-    videx_print_key_value(&tmp_str, key_part, min_key);
+    out->append(STRING_WITH_LEN("("));
+    videx_print_key_value(&tmp_str, key_part, uchar_key);
     out->append(tmp_str);
-    out->append("), ");
+    out->append(STRING_WITH_LEN("), "));
     ss.write(tmp_str.ptr(), tmp_str.length());
     range_json->add_property("value", ss.str());
     tmp_str.length(0);
 
     // TODO simplify print max
     //   if (!(flag & NO_MIN_RANGE)) {
-    //     print_key_value(out, key_part, min_key);
+    //     print_key_value(out, key_part, uchar_key);
     //     if (flag & NEAR_MIN)
     //       out->append(STRING_WITH_LEN(" < "));
     //     else
@@ -283,62 +294,56 @@ inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
     //   }
 }
 
+std::vector<int> BitsSetIn(ulong bitmap) {
+    std::vector<int> result;
+    for (int i = 0; i < 64; ++i) {
+        if (bitmap & (1UL << i)) result.push_back(i);
+    }
+    return result;
+}
+
 /**
  * referring to append_range_to_string, especially
  * sql/range_optimizer/range_optimizer.cc:1732
  *
  */
-void subha_parse_key_range(key_range *key_range, KEY *index,
+void subha_parse_key_range(const key_range *key_range, const KEY *index,
                            String *out, VidexJsonItem *req_json) {
     //   const char *NO_KEY_RANGE = "NO_KEY_RANGE";
     const uint QUICK_RANGE_flag = -1;
     if (key_range == nullptr) {
-        out->append("<NO_KEY_RANGE>");
+        out->append(STRING_WITH_LEN("<NO_KEY_RANGE>"));
         return;
     }
     KEY_PART_INFO *first_key_part = index->key_part;
-    out->append(" ");
+    out->append(STRING_WITH_LEN(" "));
     std::string key_range_flag_str = haRKeyFunctionToSymbol(key_range->flag);
-    out->append(key_range_flag_str);
+    out->append(key_range_flag_str.c_str(), key_range_flag_str.length());
 
     req_json->add_property("operator", key_range_flag_str);
     req_json->add_property_nonan("length", key_range->length);
-    req_json->add_property("index_name", index->name);
+    req_json->add_property("index_name", index->name.str);
 
     const uchar *uchar_key = key_range->key;
     //   KEY_PART_INFO *key_part;
     for (int keypart_idx : BitsSetIn(key_range->keypart_map)) {
-        if (!IsBitSet(keypart_idx, key_range->keypart_map)) {
-            out->append("<NO_KEY_RANGE for keypart_idx: ");
-            out->append(keypart_idx);
-            continue;
-        }
-        // key_part = &first_key_part[keypart_idx];
+        // if (!IsBitSet(keypart_idx, key_range->keypart_map)) {
+        //     out->append(STRING_WITH_LEN("<NO_KEY_RANGE for keypart_idx: "));
+        //     out->append(keypart_idx);
+        //     continue;
+        // }
+        // keay_part = &first_key_part[keypart_idx];
         VidexJsonItem *range_json = req_json->create("column_and_bound");
         subha_append_range(out, &first_key_part[keypart_idx], uchar_key,
                            QUICK_RANGE_flag, range_json);
 
         uchar_key += first_key_part[keypart_idx].store_length;
     }
-    //
-    // uchar *min_key, *max_key;
-    // uint16 min_length, max_length;
-
-    // /// Stores bitwise-or'ed bits defined in enum key_range_flags.
-    // uint16 flag;
-
-    // /**
-    //     Stores one of the HA_READ_MBR_XXX items in enum ha_rkey_function, only
-    //     effective when flag has a GEOM_FLAG bit.
-    // */
-    // enum ha_rkey_function rkey_func_flag;
-    // key_part_map min_keypart_map,  // bitmap of used keyparts in min_key
-    //     max_keypart_map;
-    //  if (key != nullptr && first_key_part != nullptr) out->append(" <some try>
-    //  ");
 }
 
-void VidexLogUtils::markRecordInRange(const std::string &func, key_range *min_key, key_range *max_key, KEY *key, VidexJsonItem *req_json) {
+void VidexLogUtils::markRecordInRange([[maybe_unused]]const std::string &func, [[maybe_unused]]const std::string &file,
+                                       [[maybe_unused]]const int line, const key_range *min_key, const key_range *max_key,
+                                       KEY *key, VidexJsonItem *req_json) {
     String range_info;
     range_info.set_charset(system_charset_info);
 
@@ -353,7 +358,9 @@ void VidexLogUtils::markRecordInRange(const std::string &func, key_range *min_ke
     range_info.length(0);
 
     std::stringstream ss;
-    ss << "KEY: " << key->name << "   MIN_KEY: {" << std_info_min << "}, MAX_KEY: {"<<std_info_max << "}";
+    ss << "KEY: " << key->name.str << "   MIN_KEY: {" << std_info_min << "}, MAX_KEY: {"<<std_info_max << "}";
+    // ss.write(std_info_min.c_str(), std_info_min.length());
+    // ss.write(std_info_max.c_str(), std_info_max.length());
 
     std::cout << std::endl << ss.str() << std::endl;
 

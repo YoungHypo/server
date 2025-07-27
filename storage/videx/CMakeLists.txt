@@ -38,14 +38,9 @@ INCLUDE_DIRECTORIES(
 
 SET(VIDEX_SOURCES
         videx_json_item.cc
-#        videx_log_utils.cc
+        videx_log_utils.cc
         ha_videx.cc
 )
-
-IF (PLUGIN_VIDEX STREQUAL "NO")
-        ADD_FEATURE_INFO(VIDEX "OFF" "Storage Engine")
-        RETURN()
-ENDIF()
 
 IF (PLUGIN_VIDEX STREQUAL "STATIC" OR PLUGIN_VIDEX STREQUAL "YES")
         MESSAGE(STATUS "Building VIDEX as static plugin (default)")

@@ -49,6 +49,7 @@
 #include "scope.h"
 #include <my_service_manager.h>
 #include "videx_json_item.h"
+#include "videx_log_utils.h"
 
 /** @brief
 	videx_share is a class that will be shared among all open handlers.
