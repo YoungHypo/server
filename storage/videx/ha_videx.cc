@@ -1598,7 +1598,7 @@ maria_declare_plugin(videx)
 	MYSQL_STORAGE_ENGINE_PLUGIN,
 	&videx_storage_engine,
 	"VIDEX",
-	"Haibo Yang",
+	"Rong Kang, Haibo Yang",
 	"Disaggregated, Extensible Virtual Index Engine for What-If Analysis",
 	PLUGIN_LICENSE_GPL,
 	videx_init,                            /* Plugin Init */
