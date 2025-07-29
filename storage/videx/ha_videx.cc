@@ -131,7 +131,7 @@ static int videx_init(void *p)
 {
 	DBUG_ENTER("videx_init");
 
-    init_videx_psi_keys();
+	init_videx_psi_keys();
 
 	videx_hton= static_cast<handlerton*>(p);
 
