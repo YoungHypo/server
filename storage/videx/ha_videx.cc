@@ -64,6 +64,50 @@ static const char *ha_videx_exts[] = {
 	NullS
 };
 
+#ifdef HAVE_PSI_INTERFACE
+/*
+  This structure is used to register all mutexes of this plugin
+  to the performance schema.
+*/
+
+/**
+  The key for the mutex used in the VIDEX share.
+  This is a global variable, and it is not protected by any mutex.
+  It is initialized once, before the server can serve any request.
+*/
+static PSI_mutex_key ex_key_mutex_videx_share_mutex;
+
+/**
+  An array of all mutexes to register to the performance schema.
+*/
+static PSI_mutex_info all_videx_mutexes[]=
+    {
+        /*
+          Register the VIDEX share mutex.
+          The string is the name that will be displayed by the performance schema.
+        */
+        { &ex_key_mutex_videx_share_mutex, "videx_share::mutex", 0}
+};
+
+/**
+  A helper function to register all mutexes to the performance schema.
+*/
+static void init_videx_psi_keys()
+{
+                const char* category= "videx";
+                int count;
+
+                count= array_elements(all_videx_mutexes);
+                mysql_mutex_register(category, all_videx_mutexes, count);
+}
+#else
+/*
+  Define a dummy function if the performance schema is disabled.
+  This is to avoid littering the code with #ifdef.
+*/
+static void init_videx_psi_keys() { }
+#endif
+
 videx_share::videx_share()
 {
 	thr_lock_init(&lock);
@@ -86,6 +130,8 @@ static void videx_update_optimizer_costs(OPTIMIZER_COSTS *costs)
 static int videx_init(void *p)
 {
 	DBUG_ENTER("videx_init");
+
+    init_videx_psi_keys();
 
 	videx_hton= static_cast<handlerton*>(p);
 
