@@ -50,6 +50,8 @@
 #include <my_service_manager.h>
 #include "videx_json_item.h"
 #include "videx_log_utils.h"
+#include <replication.h>
+#include <curl/curl.h>
 
 /** @brief
 	videx_share is a class that will be shared among all open handlers.

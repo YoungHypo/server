@@ -20,10 +20,22 @@
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include <my_global.h>
-#include <mysql/plugin.h>
 #include "ha_videx.h"
-#include "sql_class.h"
+
+/**
+ * Write callback function for cURL.
+ *
+ * @param contents Pointer to the received data.
+ * @param size Size of each data element.
+ * @param nmemb Number of data elements.
+ * @param outString Pointer to the string where the data will be appended.
+ * @return The total size of the data processed.
+ */
+size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *outString) {
+	size_t totalSize = size * nmemb;
+	outString->append((char *) contents, totalSize);
+	return totalSize;
+}
 
 /**
  * Sends a request to the Videx HTTP server and validates the response.
@@ -34,9 +46,90 @@
  * @param thd Pointer to the current thread's THD object.
  * @return 0 if the request is successful, 1 otherwise.
  */
-int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* thd) {
+ int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* thd) {
+	// For videx performance testing. When DEBUG_SKIP_HTTP is enabled,
+	// it tests the videx execution performance without network access, but directly return a mocked value.
+	char debug_skip_http[100];  // Buffer to hold the value of the user variable
+	int is_null;
+	if (get_user_var_str("DEBUG_SKIP_HTTP", debug_skip_http, sizeof(debug_skip_http), 0, &is_null) == 0){
+	  // For performance testing. If set to the string "True", it skips the HTTP request.
+	  if (strcmp(debug_skip_http, "True") == 0) {
+		  return 1;
+	  }
+	}
+
+	// Read the server address and change the host IP.
+	const char *host_ip = "host.docker.internal:5001";
+	char value[1000];  // Buffer to hold the value of the user variable
+	
+	if (get_user_var_str("VIDEX_SERVER", value, sizeof(value), 0, &is_null) == 0)
+	  host_ip = value;
+	const char *videx_options = "{}";
+	char option_value[1000];
+	if (get_user_var_str("VIDEX_OPTIONS", option_value, sizeof(option_value), 0, &is_null) == 0)
+	  videx_options = option_value;
+	std::cout << "VIDEX OPTIONS: " << videx_options << " IP: " << host_ip << std::endl;
+	request.add_property("videx_options", videx_options);
+  
+	std::string url = std::string("http://") + host_ip + "/ask_videx";
+	CURL *curl;
+	CURLcode res_code;
+	std::string readBuffer;
+  
+	curl = curl_easy_init(); // initialize a curl easy handle.
+	if(curl) {
+		curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+		curl_easy_setopt(curl, CURLOPT_POST, 1);
+  
+  
+		std::string request_str = request.to_json();
+		std::cout << request_str << std::endl;
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_str.c_str());
+  
+		// Set the headers
+		struct curl_slist *headers = NULL;
+		headers = curl_slist_append(headers, "Content-Type: application/json");
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+  
+		// Set the connection timeout to 10 seconds.
+		curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+		// Set the overall request timeout to 30 seconds.
+		curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+  
+		// Disallow connection reuse, so libcurl will close the connection immediately after completing a request.
+		curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L);
+
+		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+  
+		res_code = curl_easy_perform(curl);
+		if (res_code != CURLE_OK) {
+		  std::cout << "access videx_server failed res_code != curle_ok: " << host_ip << std::endl;
+			fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res_code));
+			return 1;
+		} else {
+			int code;
+			std::string message;
+			int error = videx_parse_simple_json(readBuffer.c_str(), code, message, res_json);
+			if (error) {
+				std::cout << "!__!__!__!__!__! JSON parse error: " << message << '\n';
+				return 1;
+			} else {
+				if (message == "OK") {
+					std::cout << "access videx_server success: " << host_ip << std::endl;
+					return 0;
+				} else {
+					std::cout << "access videx_server success but msg != OK: " << readBuffer.c_str() << std::endl;
+					return 1;
+				}
+			}
+		}
+	}
+	std::cout << "access videx_server failed curl = false: " << host_ip << std::endl;
 	return 1;
-}
+  }
 
 /**
  * Sends a request to the Videx HTTP server and aims to return an integer value.
@@ -48,7 +141,22 @@ int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* t
  * @return 0 if the request is successful, 1 otherwise.
  */
  int ask_from_videx_http(VidexJsonItem &request, std::string& result_str, THD * thd){
-		return 1;
+    VidexJsonItem result_item;
+    VidexStringMap res_json_string_map;
+    int error = ask_from_videx_http(request, res_json_string_map, thd);
+    if (error){
+      return error;
+    }
+    else if (videx_contains_key(res_json_string_map, "value")){
+      // For std::string, using the assignment operator = automatically replaces the entire contents of the string.
+      // There is no need to manually clear the string beforehand.
+      result_str = res_json_string_map["value"];
+      return error;
+    } else{
+      // HTTP request returned successfully, but the result does not contain a "value" field.
+      // This indicates an invalid format. Set the error_code to 1 and return.
+      return 1; // Unprocessable Entity
+    }
 }
 
 static handler *videx_create_handler(handlerton *hton, TABLE_SHARE *table, MEM_ROOT *mem_root);
@@ -849,21 +957,11 @@ ha_rows ha_videx::records_in_range(uint keynr,
 	videx_log_ins.markRecordInRange(FUNC_FILE_LINE, min_key, max_key, key, &request_item);
 
 	std::string n_rows_str;
-	ha_rows n_rows = 1;
+	ha_rows n_rows;
 	THD* thd = ha_thd();
   	int error = ask_from_videx_http(request_item, n_rows_str, thd);
 	if (error) {
-		// Mock data
-		VidexStringMap res_json;
-		res_json["customer #@# CUSTOMER_FK1"] = "58";
-		res_json["customer #@# idx_customer_nationkey_mktsegment"] = "11";
-		res_json["orders #@# idx_orders_status_date"] = "500";
-		res_json["orders #@# idx_orders_orderstatus_orderkey"] = "7362";
-
-		std::string concat_n_rows = std::string(table->s->table_name.str) + " #@# " + std::string(key->name.str);
-		DBUG_PRINT("videx", ("concat_n_rows: %s", concat_n_rows.c_str()));
-		n_rows = std::stoull(res_json[concat_n_rows]);
-		DBUG_PRINT("videx", ("n_rows: %llu", n_rows));
+		n_rows = 10; // low number to force index
 	}
 	else {
 		n_rows = std::stoull(n_rows_str);
@@ -1049,63 +1147,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 	int error = ask_from_videx_http(request_item, res_json, thd);
   	if (error) {
   		std::cout << "ask_from_videx_http failed, using default values" << std::endl;
-  		// Set default values when HTTP request fails
-
-		// supplier table
-		res_json["supplier #@# stat_n_rows"] = "100";
-		res_json["supplier #@# data_file_length"] = "49152";
-		res_json["supplier #@# index_file_length"] = "32768";
-  		res_json["supplier #@# data_free_length"] = "0";
-		res_json["supplier #@# rec_per_key #@# PRIMARY #@# S_SUPPKEY"] = "1";
-		res_json["supplier #@# rec_per_key #@# SUPPLIER_FK1 #@# S_NATIONKEY"] = "4";
-		res_json["supplier #@# rec_per_key #@# SUPPLIER_FK1 #@# S_SUPPKEY"] = "1";
-		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_NATIONKEY"] = "4";
-		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_SUPPKEY"] = "1";
-		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_NAME"] = "1";
-
-		// lineitem table
-		res_json["lineitem #@# stat_n_rows"] = "56251";
-		res_json["lineitem #@# data_file_length"] = "8929280";
-		res_json["lineitem #@# index_file_length"] = "5816320";
-  		res_json["lineitem #@# data_free_length"] = "0";
-		res_json["lineitem #@# rec_per_key #@# PRIMARY #@# L_ID"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_UK1 #@# L_ORDERKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_UK1 #@# L_LINENUMBER"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK1 #@# L_ORDERKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK1 #@# L_ID"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_PARTKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_SUPPKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_ID"] = "1";
-
-		// orders table
-		res_json["orders #@# stat_n_rows"] = "14919";
-		res_json["orders #@# data_file_length"] = "2637824";
-		res_json["orders #@# index_file_length"] = "245760";
-  		res_json["orders #@# data_free_length"] = "0";
-		res_json["orders #@# rec_per_key #@# PRIMARY #@# O_ORDERKEY"] = "1";
-		res_json["orders #@# rec_per_key #@# ORDERS_FK1 #@# O_CUSTKEY"] = "1";
-		res_json["orders #@# rec_per_key #@# ORDERS_FK1 #@# O_ORDERKEY"] = "1";
-		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERSTATUS"] = "4969";
-		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERDATE"] = "5";
-		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERKEY"] = "1";
-
-		// nation table
-  		res_json["nation #@# stat_n_rows"] = "25";
-		res_json["nation #@# data_file_length"] = "16384";
-		res_json["nation #@# index_file_length"] = "16384";
-  		res_json["nation #@# data_free_length"] = "0";
-		res_json["nation #@# rec_per_key #@# PRIMARY #@# N_NATIONKEY"] = "1";
-		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_REGIONKEY"] = "5";
-		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_NATIONKEY"] = "1";
-
-		// customer table
-		res_json["customer #@# stat_n_rows"] = "1545";
-		res_json["customer #@# data_file_length"] = "327680";
-		res_json["customer #@# index_file_length"] = "49152";
-  		res_json["customer #@# data_free_length"] = "0";
-		res_json["customer #@# rec_per_key #@# PRIMARY #@# C_CUSTKEY"] = "1";
-		res_json["customer #@# rec_per_key #@# CUSTOMER_FK1 #@# C_NATIONKEY"] = "61";
-		res_json["customer #@# rec_per_key #@# CUSTOMER_FK1 #@# C_CUSTKEY"] = "1";
+  		return 0;
   	}
 	else {
 		// validate the returned json
@@ -1233,8 +1275,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 // 			ib_table->stats_shared_unlock();
 // 		}
 
-		std::string concat_stat_n_rows = std::string(table->s->table_name.str) + " #@# stat_n_rows";
-		n_rows = std::stoull(res_json[concat_stat_n_rows.c_str()]);
+		n_rows = std::stoull(res_json["stat_n_rows"]);
 		DBUG_PRINT("videx", ("n_rows: %lu", n_rows));
 
 		/*
@@ -1271,17 +1312,13 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 		stats.records = (ha_rows) n_rows;
 		stats.deleted = 0;
 
-		std::string concat_data_file_length = std::string(table->s->table_name.str) + " #@# data_file_length";
-		std::string concat_index_file_length = std::string(table->s->table_name.str) + " #@# index_file_length";
-
-	    stats.data_file_length = std::stoull(res_json[concat_data_file_length.c_str()]);
-	    stats.index_file_length = std::stoull(res_json[concat_index_file_length.c_str()]);
+	    stats.data_file_length = std::stoull(res_json["data_file_length"]);
+	    stats.index_file_length = std::stoull(res_json["index_file_length"]);
 		DBUG_PRINT("videx", ("stats.data_file_length: %llu", stats.data_file_length));
 		DBUG_PRINT("videx", ("stats.index_file_length: %llu", stats.index_file_length));
 	    if (flag & HA_STATUS_VARIABLE_EXTRA)
 	    {
-			std::string concat_data_free_length = std::string(table->s->table_name.str) + " #@# data_free_length";
-			stats.delete_length = std::stoull(res_json[concat_data_free_length.c_str()]);
+			stats.delete_length = std::stoull(res_json["data_free_length"]);
 			DBUG_PRINT("videx", ("stats.delete_length: %llu", stats.delete_length));
         }
 		// if (fil_space_t* space = ib_table->space) {
@@ -1440,7 +1477,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 				// 	rec_per_key_int = 1;
 				// }
 
-				std::string concat_key = std::string(table->s->table_name.str) + " #@# rec_per_key #@# " + key->name.str + " #@# " + key->key_part[j].field->field_name.str;
+				std::string concat_key = "rec_per_key #@# " + std::string(key->name.str) + " #@# " + std::string(key->key_part[j].field->field_name.str);
 				ulong rec_per_key_int = 0;
 			  	if (videx_contains_key(res_json, concat_key.c_str())){
 		        	rec_per_key_int = std::stoul(res_json[concat_key.c_str()]);
