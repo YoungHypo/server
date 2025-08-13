@@ -1117,8 +1117,8 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 	char		path[FN_REFLEN];
 	// os_file_stat_t	stat_info;
 
-	DBUG_ENTER("ha_videx::info");
-	DEBUG_SYNC_C("ha_innobase_info_low");
+	DBUG_ENTER("ha_videx::info_low");
+	DEBUG_SYNC_C("ha_videx_info_low");
 
 	// construct request
 	VidexStringMap res_json;
@@ -1147,7 +1147,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 	int error = ask_from_videx_http(request_item, res_json, thd);
   	if (error) {
   		std::cout << "ask_from_videx_http failed, using default values" << std::endl;
-  		return 0;
+	  		DBUG_RETURN(0);
   	}
 	else {
 		// validate the returned json
