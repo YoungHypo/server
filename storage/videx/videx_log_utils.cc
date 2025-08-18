@@ -23,17 +23,29 @@
 #include "videx_log_utils.h"
 #include <mysql/service_thd_alloc.h>
 
-// MariaDB 11.0 does not support functional indexes, so we directly return the field name
+/**
+Return printable field name; MariaDB 11.0 lacks functional index names.
+*/
+
 const char *get_field_name_or_expression(THD *, const Field *field) {
     return field->field_name.str;
 }
 
 VidexLogUtils videx_log_ins;
+
+/**
+Mark unexpected call-sites for debugging; prints a short message.
+*/
+
 void VidexLogUtils::markPassbyUnexpected(const std::string &func,
                                            const std::string &file,
                                            const int line) {
   markHaFuncPassby(func, file, line, "NOOOO!", true);
 }
+
+/**
+Explicitly suppress logging for known-irrelevant call paths during EXPLAIN.
+*/
 
 void VidexLogUtils::NotMarkPassby(const std::string &, const std::string &,
                                     const int) {
@@ -41,6 +53,10 @@ void VidexLogUtils::NotMarkPassby(const std::string &, const std::string &,
   // use this function. Actually, nothing is printed.
   return;
 }
+
+/**
+Generic passby logger with optional message and silence flag.
+*/
 
 void VidexLogUtils::markHaFuncPassby(const std::string &func,
                                        const std::string &file, const int line,
@@ -73,15 +89,10 @@ void VidexLogUtils::markHaFuncPassby(const std::string &func,
   @param[in]  key_part     Index components description
   @param[in]  key          Key tuple
 */
+
 void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
                            const uchar *uchar_key) {
     Field *field = key_part->field;
-
-    // MariaDB 11.0 does not support Field_typed_array and multi-valued indexes
-    // original MySQL code:
-    // if (field->is_array()) {
-    //     field = down_cast<Field_typed_array *>(field)->get_conv_field();
-    // }
 
     if (field->flags & BLOB_FLAG) {
         // Byte 0 of a nullable key is the null-byte. If set, key is NULL.
@@ -154,7 +165,6 @@ void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
         // Worst case: Every character is escaped.
         const size_t buffer_size = tmp.length() * 2 + 1;
         char *quoted_string = (char*)thd_alloc(current_thd, buffer_size);
-        // char *quoted_string = new char[buffer_size];
 
         my_bool overflow;
         const size_t quoted_length = escape_string_for_mysql(
@@ -172,8 +182,9 @@ void videx_print_key_value(String *out, const KEY_PART_INFO *key_part,
 }
 
 /**
- * replace `HA_READ_KEY_EXACT`, `HA_READ_KEY_OR_NEXT` to =，>=
- */
+Convert range read function to a concise symbolic operator string.
+*/
+
 std::string haRKeyFunctionToSymbol(ha_rkey_function function) {
     switch (function) {
         case HA_READ_KEY_EXACT:
@@ -207,6 +218,10 @@ std::string haRKeyFunctionToSymbol(ha_rkey_function function) {
     }
 }
 
+/**
+Append one column bound to output and JSON; used by key-range serialization.
+*/
+
 inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
                                const uchar *uchar_key,
                                const uint, VidexJsonItem* range_json) {
@@ -215,52 +230,6 @@ inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
     tmp_str.set_charset(system_charset_info);
     tmp_str.length(0);
     std::stringstream ss;
-
-    // TODO not support GEOM_FLAG temporarily
-    //   if (flag & GEOM_FLAG) {
-    //     /*
-    //       The flags of GEOM ranges do not work the same way as for other
-    //       range types, so printing "col < some_geom" doesn't make sense.
-    //       Just print the column name, not operator.
-    //     */
-    //     out->append(key_part->field->field_name);
-    //     out->append(STRING_WITH_LEN(" "));
-    //     subha_print_key_value(out, key_part, uchar_key);
-    //     return;
-    //   }
-
-    // Range scans over multi-valued indexes use a sequence of MEMBER OF
-    // predicates ORed together.
-    // MariaDB 11.0 does not support typed arrays
-    /*
-    if (key_part->field->is_array()) {
-        videx_print_key_value(&tmp_str, key_part, uchar_key);
-        out->append(tmp_str);
-        ss.write(tmp_str.ptr(), tmp_str.length());
-        range_json->add_property("value", ss.str());
-        tmp_str.length(0);
-
-        out->append(STRING_WITH_LEN(" MEMBER OF ("));
-        const std::string expression = ItemToString(
-                down_cast<Item_func *>(key_part->field->gcol_info->expr_item)
-                        ->get_arg(0));  // Strip off CAST(... AS <type> ARRAY).
-        out->append(expression.data(), expression.size());
-        out->append(')');
-
-        range_json->add_property("column", expression);
-        range_json->add_property("special_operator", "MEMBER OF");
-        return;
-    }
-    */
-
-    //   if (!Overlaps(flag, NO_MIN_RANGE | NO_MAX_RANGE | NEAR_MIN | NEAR_MAX) &&
-    //       range_is_equality(uchar_key, max_key, key_part->store_length,
-    //                         key_part->field->maybe_null())) {
-    //     out->append(get_field_name_or_expression(current_thd,
-    //     key_part->field)); out->append(STRING_WITH_LEN(" = "));
-    //     subha_print_key_value(out, key_part, uchar_key);
-    //     return;
-    //   }
 
     const char * field_or_expr = get_field_name_or_expression(current_thd, key_part->field);
     out->append(field_or_expr, strlen(field_or_expr));
@@ -273,26 +242,11 @@ inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
     ss.write(tmp_str.ptr(), tmp_str.length());
     range_json->add_property("value", ss.str());
     tmp_str.length(0);
-
-    // TODO simplify print max
-    //   if (!(flag & NO_MIN_RANGE)) {
-    //     print_key_value(out, key_part, uchar_key);
-    //     if (flag & NEAR_MIN)
-    //       out->append(STRING_WITH_LEN(" < "));
-    //     else
-    //       out->append(STRING_WITH_LEN(" <= "));
-    //   }
-
-    //   out->append(get_field_name_or_expression(current_thd, key_part->field));
-
-    //   if (!(flag & NO_MAX_RANGE)) {
-    //     if (flag & NEAR_MAX)
-    //       out->append(STRING_WITH_LEN(" < "));
-    //     else
-    //       out->append(STRING_WITH_LEN(" <= "));
-    //     print_key_value(out, key_part, max_key);
-    //   }
 }
+
+/**
+Return indices of set bits (0..63) in the given bitmap.
+*/
 
 std::vector<int> BitsSetIn(ulong bitmap) {
     std::vector<int> result;
@@ -303,13 +257,11 @@ std::vector<int> BitsSetIn(ulong bitmap) {
 }
 
 /**
- * referring to append_range_to_string, especially
- * sql/range_optimizer/range_optimizer.cc:1732
- *
- */
+Serialize a `key_range` into text and JSON; mirrors range optimizer output.
+*/
+
 void subha_parse_key_range(const key_range *key_range, const KEY *index,
                            String *out, VidexJsonItem *req_json) {
-    //   const char *NO_KEY_RANGE = "NO_KEY_RANGE";
     const uint QUICK_RANGE_flag = -1;
     if (key_range == nullptr) {
         out->append(STRING_WITH_LEN("<NO_KEY_RANGE>"));
@@ -325,14 +277,7 @@ void subha_parse_key_range(const key_range *key_range, const KEY *index,
     req_json->add_property("index_name", index->name.str);
 
     const uchar *uchar_key = key_range->key;
-    //   KEY_PART_INFO *key_part;
     for (int keypart_idx : BitsSetIn(key_range->keypart_map)) {
-        // if (!IsBitSet(keypart_idx, key_range->keypart_map)) {
-        //     out->append(STRING_WITH_LEN("<NO_KEY_RANGE for keypart_idx: "));
-        //     out->append(keypart_idx);
-        //     continue;
-        // }
-        // keay_part = &first_key_part[keypart_idx];
         VidexJsonItem *range_json = req_json->create("column_and_bound");
         subha_append_range(out, &first_key_part[keypart_idx], uchar_key,
                            QUICK_RANGE_flag, range_json);
@@ -340,6 +285,11 @@ void subha_parse_key_range(const key_range *key_range, const KEY *index,
         uchar_key += first_key_part[keypart_idx].store_length;
     }
 }
+
+/**
+Logs and serializes min/max key bounds for a given index into `req_json`.
+Also prints a concise human-readable summary for debugging.
+*/
 
 void VidexLogUtils::markRecordInRange([[maybe_unused]]const std::string &func, [[maybe_unused]]const std::string &file,
                                        [[maybe_unused]]const int line, const key_range *min_key, const key_range *max_key,
@@ -359,10 +309,6 @@ void VidexLogUtils::markRecordInRange([[maybe_unused]]const std::string &func, [
 
     std::stringstream ss;
     ss << "KEY: " << key->name.str << "   MIN_KEY: {" << std_info_min << "}, MAX_KEY: {"<<std_info_max << "}";
-    // ss.write(std_info_min.c_str(), std_info_min.length());
-    // ss.write(std_info_max.c_str(), std_info_max.length());
-
     std::cout << std::endl << ss.str() << std::endl;
-
     std::cout << "req_json = " << req_json->to_json() << std::endl;
 }
