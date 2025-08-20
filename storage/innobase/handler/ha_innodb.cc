@@ -5122,7 +5122,7 @@ void ha_innobase::column_bitmaps_signal()
   for (uint j = 0; j < table->s->virtual_fields; j++)
   {
     if (table->vfield[j]->stored_in_db())
-      return;
+      continue;
 
     dict_col_t *col= &m_prebuilt->table->v_cols[num_v].m_col;
     if (col->ord_part ||
@@ -14939,8 +14939,6 @@ stats_fetch:
 		stats.deleted = 0;
 		if (fil_space_t* space = ib_table->space) {
 			const ulint size = space->physical_size();
-			std::string concat_data_file_length = std::string(table->s->table_name.str) + " #@# data_file_length";
-			std::string concat_index_file_length = std::string(table->s->table_name.str) + " #@# index_file_length";
 			stats.data_file_length
 				= ulonglong(stat_clustered_index_size)
 				* size;

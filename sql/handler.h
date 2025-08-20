@@ -3793,14 +3793,13 @@ public:
 protected:
   virtual IO_AND_CPU_COST scan_time()
   {
-    DBUG_ENTER("handler::scan_time");
     IO_AND_CPU_COST cost;
     ulonglong length= stats.data_file_length;
     cost.io= (double) (length / IO_SIZE);
     cost.cpu= (!stats.block_size ? 0.0 :
                (double) ((length + stats.block_size-1)/stats.block_size) *
                INDEX_BLOCK_COPY_COST);
-    DBUG_RETURN(cost);
+    return cost;
   }
 public:
 
