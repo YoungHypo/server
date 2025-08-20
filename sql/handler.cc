@@ -3486,9 +3486,6 @@ IO_AND_CPU_COST handler::keyread_time(uint index, ulong ranges, ha_rows rows,
   }
   cost.io=  (double) io_blocks;
   cost.cpu= blocks * INDEX_BLOCK_COPY_COST;
-  DBUG_PRINT("handler::keyread_time", ("stats.block_size: %u", stats.block_size));
-  DBUG_PRINT("handler::keyread_time", ("cost.io: %f", cost.io));
-  DBUG_PRINT("handler::keyread_time", ("cost.cpu: %f", cost.cpu));
   return cost;
 }
 

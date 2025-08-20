@@ -3724,15 +3724,11 @@ public:
 
   inline double io_cost(IO_AND_CPU_COST cost)
   {
-    DBUG_PRINT("handler::io_cost", ("cost.io: %f", cost.io));
-    DBUG_PRINT("handler::io_cost", ("DISK_READ_COST: %f", DISK_READ_COST));
-    DBUG_PRINT("handler::io_cost", ("DISK_READ_RATIO: %f", DISK_READ_RATIO));
     return cost.io * DISK_READ_COST * DISK_READ_RATIO;
   }
 
   inline double cost(IO_AND_CPU_COST cost)
   {
-    DBUG_PRINT("handler::cost", ("cost.cpu: %f", cost.cpu));
     return io_cost(cost) + cost.cpu;
   }
 
@@ -3804,10 +3800,6 @@ protected:
     cost.cpu= (!stats.block_size ? 0.0 :
                (double) ((length + stats.block_size-1)/stats.block_size) *
                INDEX_BLOCK_COPY_COST);
-    
-    DBUG_PRINT("handler::scan_time", ("cost.io: %f", cost.io));
-    DBUG_PRINT("handler::scan_time", ("cost.cpu: %f", cost.cpu));
-    DBUG_PRINT("handler::scan_time", ("INDEX_BLOCK_COPY_COST: %f", INDEX_BLOCK_COPY_COST));
     DBUG_RETURN(cost);
   }
 public:
@@ -3829,11 +3821,6 @@ public:
     IO_AND_CPU_COST cost= scan_time();
     cost.cpu+= (TABLE_SCAN_SETUP_COST +
                 (double) rows * (ROW_NEXT_FIND_COST + ROW_COPY_COST));
-    DBUG_PRINT("handler::ha_scan_time", ("cost.cpu: %f", cost.cpu));
-    DBUG_PRINT("handler::ha_scan_time", ("TABLE_SCAN_SETUP_COST: %f", TABLE_SCAN_SETUP_COST));
-    DBUG_PRINT("handler::ha_scan_time", ("ROW_NEXT_FIND_COST: %f", ROW_NEXT_FIND_COST));
-    DBUG_PRINT("handler::ha_scan_time", ("ROW_COPY_COST: %f", ROW_COPY_COST));
-    DBUG_PRINT("handler::ha_scan_time", ("rows: %llu", rows));
     return cost;
   }
 
@@ -3868,10 +3855,6 @@ protected:
   virtual IO_AND_CPU_COST rnd_pos_time(ha_rows rows)
   {
     double r= rows2double(rows);
-    DBUG_PRINT("handler::rnd_pos_time", ("r: %f", r));
-    DBUG_PRINT("handler::rnd_pos_time", ("stats.block_size: %u", stats.block_size));
-    DBUG_PRINT("handler::rnd_pos_time", ("blocks_read: %f", r * ((stats.block_size + IO_SIZE -1 )/IO_SIZE)));
-    DBUG_PRINT("handler::rnd_pos_time", ("copy_block_from_cache: %f", r * INDEX_BLOCK_COPY_COST));
     return
     {
       r * ((stats.block_size + IO_SIZE -1 )/IO_SIZE),  // Blocks read

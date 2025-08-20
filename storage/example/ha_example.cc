@@ -333,6 +333,7 @@ int ha_example::open(const char *name, int mode, uint test_if_locked)
                       (options->strparam ? options->strparam : "<NULL>"),
                       options->ullparam, options->enumparam, options->boolparam));
 #endif
+
   DBUG_RETURN(0);
 }
 

@@ -58,7 +58,7 @@ size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *ou
 	}
 
 	// Read the server address and change the host IP.
-	const char *host_ip = "host.docker.internal:5001"; // ✅
+	const char *host_ip = "host.docker.internal:5001";
 	char value[1000];  // Buffer to hold the value of the user variable
 	
 	if (get_user_var_str("VIDEX_SERVER", value, sizeof(value), 0, &is_null) == 0)
