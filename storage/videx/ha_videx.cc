@@ -20,10 +20,22 @@
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include <my_global.h>
-#include <mysql/plugin.h>
 #include "ha_videx.h"
-#include "sql_class.h"
+
+/**
+ * Write callback function for cURL.
+ *
+ * @param contents Pointer to the received data.
+ * @param size Size of each data element.
+ * @param nmemb Number of data elements.
+ * @param outString Pointer to the string where the data will be appended.
+ * @return The total size of the data processed.
+ */
+size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *outString) {
+	size_t totalSize = size * nmemb;
+	outString->append((char *) contents, totalSize);
+	return totalSize;
+}
 
 /**
  * Sends a request to the Videx HTTP server and validates the response.
@@ -34,9 +46,87 @@
  * @param thd Pointer to the current thread's THD object.
  * @return 0 if the request is successful, 1 otherwise.
  */
-int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* thd) {
+ int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* thd) {
+	// Set DEBUG_SKIP_HTTP enabled for performance testing using mocked values.
+	char debug_skip_http[100];  // Buffer to hold the user variable value
+	int is_null;
+	if (get_user_var_str("DEBUG_SKIP_HTTP", debug_skip_http, sizeof(debug_skip_http), 0, &is_null) == 0){
+	  // If set to the string "True", it skips the HTTP request.
+	  if (strcmp(debug_skip_http, "True") == 0) {
+		  return 1;
+	  }
+	}
+
+	// Read the server address and change the host IP.
+	const char *host_ip = "127.0.0.1:5001";
+	char value[1000];  // Buffer to hold the value of the user variable
+	
+	if (get_user_var_str("VIDEX_SERVER", value, sizeof(value), 0, &is_null) == 0)
+	  host_ip = value;
+	const char *videx_options = "{}";
+	char option_value[1000];
+	if (get_user_var_str("VIDEX_OPTIONS", option_value, sizeof(option_value), 0, &is_null) == 0)
+	  videx_options = option_value;
+	std::cout << "VIDEX OPTIONS: " << videx_options << " IP: " << host_ip << std::endl;
+	request.add_property("videx_options", videx_options);
+  
+	std::string url = std::string("http://") + host_ip + "/ask_videx";
+	CURL *curl;
+	CURLcode res_code;
+	std::string readBuffer;
+  
+	curl = curl_easy_init();
+	if(curl) {
+		curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+		curl_easy_setopt(curl, CURLOPT_POST, 1);
+  
+  
+		std::string request_str = request.to_json();
+		std::cout << request_str << std::endl;
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_str.c_str());
+  
+		// Set the headers
+		struct curl_slist *headers = NULL;
+		headers = curl_slist_append(headers, "Content-Type: application/json");
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+  
+		curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+		curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+  
+		// Disallow connection reuse, so libcurl will close the connection immediately after completing a request.
+		curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L);
+
+		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+  
+		res_code = curl_easy_perform(curl);
+		if (res_code != CURLE_OK) {
+		  std::cout << "access videx_server failed res_code != curle_ok: " << host_ip << std::endl;
+			fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res_code));
+			return 1;
+		} else {
+			int code;
+			std::string message;
+			int error = videx_parse_simple_json(readBuffer.c_str(), code, message, res_json);
+			if (error) {
+				std::cout << "!__!__!__!__!__! JSON parse error: " << message << '\n';
+				return 1;
+			} else {
+				if (message == "OK") {
+					std::cout << "access videx_server success: " << host_ip << std::endl;
+					return 0;
+				} else {
+					std::cout << "access videx_server success but msg != OK: " << readBuffer.c_str() << std::endl;
+					return 1;
+				}
+			}
+		}
+	}
+	std::cout << "access videx_server failed curl = false: " << host_ip << std::endl;
 	return 1;
-}
+  }
 
 /**
  * Sends a request to the Videx HTTP server and aims to return an integer value.
@@ -48,21 +138,49 @@ int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* t
  * @return 0 if the request is successful, 1 otherwise.
  */
  int ask_from_videx_http(VidexJsonItem &request, std::string& result_str, THD * thd){
-		return 1;
+    VidexJsonItem result_item;
+    VidexStringMap res_json_string_map;
+    int error = ask_from_videx_http(request, res_json_string_map, thd);
+    if (error){
+      return error;
+    }
+    else if (videx_contains_key(res_json_string_map, "value")){
+      result_str = res_json_string_map["value"];
+      return error;
+    } else{
+      // HTTP request returned successfully, but the result does not contain a "value" field.
+      // This indicates an invalid format. Set the error_code to 1 and return.
+      return 1;
+    }
 }
 
 static handler *videx_create_handler(handlerton *hton, TABLE_SHARE *table, MEM_ROOT *mem_root);
 
 handlerton *videx_hton;
 
-/**
-	@brief
-	Function we use in the creation of our hash to get key.
-*/
-
 static const char *ha_videx_exts[] = {
 	NullS
 };
+
+#ifdef HAVE_PSI_INTERFACE
+static PSI_mutex_key ex_key_mutex_videx_share_mutex;
+
+static PSI_mutex_info all_videx_mutexes[]=
+    {
+        { &ex_key_mutex_videx_share_mutex, "videx_share::mutex", 0}
+};
+
+static void init_videx_psi_keys()
+{
+                const char* category= "videx";
+                int count;
+
+                count= array_elements(all_videx_mutexes);
+                mysql_mutex_register(category, all_videx_mutexes, count);
+}
+#else
+static void init_videx_psi_keys() { }
+#endif
 
 videx_share::videx_share()
 {
@@ -72,20 +190,22 @@ videx_share::videx_share()
 
 static void videx_update_optimizer_costs(OPTIMIZER_COSTS *costs)
 {
-  /*
-    The following number was found by check_costs.pl when using 1M rows
-    and all rows are cached. See optimizer_costs.txt for details
-  */
-  costs->row_next_find_cost= 0.00007013;
-  costs->row_lookup_cost=    0.00076597;
-  costs->key_next_find_cost= 0.00009900;
-  costs->key_lookup_cost=    0.00079112;
-  costs->row_copy_cost=      0.00006087;
+	/*
+	* The following values were taken from MariaDB Server 11.8 in the function innobase_update_optimizer_costs(OPTIMIZER_COSTS *costs).
+	* See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	*/
+	costs->row_next_find_cost= 0.00007013;
+	costs->row_lookup_cost=    0.00076597;
+	costs->key_next_find_cost= 0.00009900;
+	costs->key_lookup_cost=    0.00079112;
+	costs->row_copy_cost=      0.00006087;
 }
 
 static int videx_init(void *p)
 {
 	DBUG_ENTER("videx_init");
+
+	init_videx_psi_keys();
 
 	videx_hton= static_cast<handlerton*>(p);
 
@@ -101,15 +221,7 @@ static int videx_init(void *p)
 	DBUG_RETURN(0);
 }
 
-/**
-	@brief
-	videx of simple lock controls. The "share" it creates is a
-	structure we will pass to each videx handler. Do you have to have
-	one of these? Well, you have pieces that are used for locking, and
-	they are needed to function.
-*/
-
-videx_share *ha_videx::get_share() // ✅
+videx_share *ha_videx::get_share()
 {
 	videx_share *tmp_share;
 
@@ -131,7 +243,7 @@ err:
 
 static handler* videx_create_handler(handlerton *hton,
 					TABLE_SHARE *table, 
-					MEM_ROOT *mem_root) // ✅
+					MEM_ROOT *mem_root)
 {
 	return new (mem_root) ha_videx(hton, table);
 }
@@ -140,7 +252,6 @@ ha_videx::ha_videx(
 	handlerton*	hton,
 	TABLE_SHARE*	table_arg)
 	:handler(hton, table_arg),
-	// m_prebuilt(),
 	m_user_thd(),
 	m_int_table_flags(HA_REC_NOT_IN_SEQ
 			  | HA_NULL_IN_KEY
@@ -154,9 +265,6 @@ ha_videx::ha_videx(
 			  | HA_CAN_GEOMETRY
 			  | HA_PARTIAL_COLUMN_READ
 			  | HA_TABLE_SCAN_ON_INDEX
-			  // | HA_CAN_FULLTEXT
-			  // | HA_CAN_FULLTEXT_EXT
-			  // | HA_CAN_FULLTEXT_HINTS
 			  | HA_CAN_EXPORT
         	  | HA_ONLINE_ANALYZE
 			  | HA_CAN_RTREEKEYS
@@ -171,19 +279,7 @@ ha_videx::ha_videx(
 
 ha_videx::~ha_videx() = default;
 
-ulonglong ha_videx::table_version() const
-{
-	// TODO:
-	return 0;
-}
-
-enum row_type ha_videx::get_row_type() const
-{
-	// TODO:
-	return ROW_TYPE_NOT_USED;
-}
-
-const char* ha_videx::table_type() const // ✅
+const char* ha_videx::table_type() const
 {
 	return "VIDEX";
 }
@@ -197,9 +293,6 @@ handler::Table_flags ha_videx::table_flags() const
 		flags|= HA_REQUIRE_PRIMARY_KEY;
 	}
 
-	/* Need to use tx_isolation here since table flags is (also)
-	called before prebuilt is inited. */
-
 	if (thd_tx_isolation(thd) <= ISO_READ_COMMITTED) {
 		return(flags);
 	}
@@ -207,7 +300,7 @@ handler::Table_flags ha_videx::table_flags() const
 	return(flags | HA_BINLOG_STMT_CAPABLE);
 }
 
-ulong ha_videx::index_flags( // ✅
+ulong ha_videx::index_flags(
 	uint	key,
 	uint,
 	bool) const
@@ -232,22 +325,30 @@ ulong ha_videx::index_flags( // ✅
 	return(flags);
 }
 
-uint ha_videx::max_supported_keys() const // ✅
+uint ha_videx::max_supported_keys() const
 {
 	return(MAX_KEY);
 }
 
-uint ha_videx::max_supported_key_length() const // ✅
+uint ha_videx::max_supported_key_length() const
 {
+	/*
+	 * This value was taken from MariaDB Server 11.8 in the function innobase_max_supported_key_length()
+	 * See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	*/
 	return(3500);
 }
 
-uint ha_videx::max_supported_key_part_length() const // ✅
+uint ha_videx::max_supported_key_part_length() const
 {
+	/*
+	 * This value was taken from MariaDB Server 11.8 in the function innobase_max_supported_key_part_length()
+	 * See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	*/
 	return(3072);
 }
 
-const key_map* ha_videx::keys_to_use_for_scanning() // ✅
+const key_map* ha_videx::keys_to_use_for_scanning()
 {
 	return(&key_map_full);
 }
@@ -255,8 +356,7 @@ const key_map* ha_videx::keys_to_use_for_scanning() // ✅
 void ha_videx::column_bitmaps_signal()
 {
 	DBUG_ENTER("ha_videx::column_bitmaps_signal");
-	// TODO:
-	// indexed virtual columns
+	// TODO: handle indexed virtual columns for VIDEX engine
 	DBUG_VOID_RETURN;
 }
 
@@ -293,6 +393,10 @@ int ha_videx::open(const char *name, int mode, uint test_if_locked)
 		ref_length = table->key_info[m_primary_key].key_length;
 	}
 
+	/*
+	 * This value was taken from MariaDB Server 11.8 in the function open(), where stats.block_size is set to srv_page_size.
+	 * See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	*/
 	stats.block_size = 16384;
 
 	info(HA_STATUS_NO_LOCK | HA_STATUS_VARIABLE | HA_STATUS_CONST
@@ -316,7 +420,7 @@ int ha_videx::open(const char *name, int mode, uint test_if_locked)
 	sql_base.cc, sql_select.cc and table.cc
 */
 
-int ha_videx::close(void) // ✅
+int ha_videx::close(void)
 {
 	DBUG_ENTER("ha_videx::close");
 	DBUG_RETURN(0);
@@ -326,7 +430,6 @@ handler* ha_videx::clone(
 	const char*	name,		/*!< in: table name */
 	MEM_ROOT*	mem_root)	/*!< in: memory context */
 {
-	// TODO:
 	DBUG_ENTER("ha_videx::clone");
 	DBUG_RETURN(NULL);
 }
@@ -334,7 +437,6 @@ handler* ha_videx::clone(
 IO_AND_CPU_COST ha_videx::scan_time()
 {
 	DBUG_ENTER("ha_videx::scan_time");
-
 	DBUG_RETURN(handler::scan_time());
 }
 
@@ -345,121 +447,46 @@ IO_AND_CPU_COST ha_videx::rnd_pos_time(ha_rows rows)
 }
 
 /**
-	@brief
-	write_row() inserts a row. No extra() hint is given currently if a bulk load
-	is happening. buf() is a byte array of data. You can use the field
-	information to extract the data from the native byte array type.
-
-	@details
-	videx of this would be:
-	@code
-	for (Field **field=table->field ; *field ; field++)
-	{
-		...
-	}
-	@endcode
-
-	See ha_tina.cc for an example of extracting all of the data as strings.
-
-	See the note for update_row() on auto_increments and timestamps. This
-	case also applies to write_row().
-
-	Called from item_sum.cc, item_sum.cc, sql_acl.cc, sql_insert.cc,
-	sql_insert.cc, sql_select.cc, sql_table.cc, sql_udf.cc, and sql_update.cc.
-
-	@see
-	item_sum.cc, item_sum.cc, sql_acl.cc, sql_insert.cc,
-	sql_insert.cc, sql_select.cc, sql_table.cc, sql_udf.cc and sql_update.cc
+write_row() inserts a row. see ha_tina.cc for examples — not required for VIDEX.
 */
 
-int ha_videx::write_row(const uchar *buf) // ✅
+int ha_videx::write_row(const uchar *buf)
 {
 	DBUG_ENTER("ha_videx::write_row");
-
 	DBUG_RETURN(0);
 }
 
 /**
-	@brief
-	Yes, update_row() does what you expect, it updates a row. old_data will have
-	the previous row record in it, while new_data will have the newest data in it.
-	Keep in mind that the server can do updates based on ordering if an ORDER BY
-	clause was used. Consecutive ordering is not guaranteed.
-
-	@details
-	Currently new_data will not have an updated auto_increament record, or
-	and updated timestamp field. You can do these for videx by doing:
-	@code
-	if (table->next_number_field && record == table->record[0])
-		update_auto_increment();
-	@endcode
-
-	Called from sql_select.cc, sql_acl.cc, sql_update.cc, and sql_insert.cc.
-
-	@see
-	sql_select.cc, sql_acl.cc, sql_update.cc and sql_insert.cc
+Updates a row. Not required for VIDEX.
 */
-int ha_videx::update_row(const uchar *old_data, const uchar *new_data) // ✅
+int ha_videx::update_row(const uchar *old_data, const uchar *new_data)
 {
 	DBUG_ENTER("ha_videx::update_row");
-
 	DBUG_RETURN(HA_ERR_WRONG_COMMAND);
 }
 
 /**
-	@brief
-	This will delete a row. buf will contain a copy of the row to be deleted.
-	The server will call this right after the current row has been called (from
-	either a previous rnd_nexT() or index call).
-
-	@details
-	If you keep a pointer to the last row or can access a primary key it will
-	make doing the deletion quite a bit easier. Keep in mind that the server does
-	not guarantee consecutive deletions. ORDER BY clauses can be used.
-
-	Called in sql_acl.cc and sql_udf.cc to manage internal table
-	information.  Called in sql_delete.cc, sql_insert.cc, and
-	sql_select.cc. In sql_select it is used for removing duplicates
-	while in insert it is used for REPLACE calls.
-
-	@see
-	sql_acl.cc, sql_udf.cc, sql_delete.cc, sql_insert.cc and sql_select.cc
+Deletes a row. Not required for VIDEX.
 */
 
-int ha_videx::delete_row(const uchar *buf) // ✅
+int ha_videx::delete_row(const uchar *buf)
 {
 	DBUG_ENTER("ha_videx::delete_row");
 
 	DBUG_RETURN(HA_ERR_WRONG_COMMAND);
 }
 
-bool ha_videx::was_semi_consistent_read()
-{
-	DBUG_ENTER("ha_videx::was_semi_consistent_read");
-	// TODO:
-	DBUG_RETURN(false);
-}
-
-void ha_videx::try_semi_consistent_read(bool yes)
-{
-	DBUG_ENTER("ha_videx::try_semi_consistent_read");
-	// TODO:
-	DBUG_VOID_RETURN;
-}
-
-void ha_videx::unlock_row() // ✅
+void ha_videx::unlock_row()
 {
 	DBUG_ENTER("ha_videx::unlock_row");
-
 	DBUG_VOID_RETURN;
 }
 
 /**
-	@brief
-	Used to read forward through the index.
+read forward through the index. Not required for VIDEX.
 */
 
-int ha_videx::index_next(uchar *buf) // ✅
+int ha_videx::index_next(uchar *buf)
 {
 	int rc;
 	DBUG_ENTER("ha_videx::index_next");
@@ -468,11 +495,10 @@ int ha_videx::index_next(uchar *buf) // ✅
 }
 
 /**
-	@brief
-	Used to read backwards through the index.
+read backwards through the index. Not required for VIDEX.
 */
 
-int ha_videx::index_prev(uchar *buf) // ✅
+int ha_videx::index_prev(uchar *buf)
 {
 	int rc;
 	DBUG_ENTER("ha_videx::index_prev");
@@ -481,16 +507,9 @@ int ha_videx::index_prev(uchar *buf) // ✅
 }
 
 /**
-	@brief
-	index_first() asks for the first key in the index.
-
-	@details
-	Called from opt_range.cc, opt_sum.cc, sql_handler.cc, and sql_select.cc.
-
-	@see
-	opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
+asks for the first key in the index. Not required for VIDEX.
 */
-int ha_videx::index_first(uchar *buf) // ✅
+int ha_videx::index_first(uchar *buf)
 {
 	int rc;
 	DBUG_ENTER("ha_videx::index_first");
@@ -499,16 +518,9 @@ int ha_videx::index_first(uchar *buf) // ✅
 }
 
 /**
-	@brief
-	index_last() asks for the last key in the index.
-
-	@details
-	Called from opt_range.cc, opt_sum.cc, sql_handler.cc, and sql_select.cc.
-
-	@see
-	opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
+asks for the last key in the index. Not required for VIDEX.
 */
-int ha_videx::index_last(uchar *buf) // ✅
+int ha_videx::index_last(uchar *buf)
 {
 	int rc;
 	DBUG_ENTER("ha_videx::index_last");
@@ -517,45 +529,25 @@ int ha_videx::index_last(uchar *buf) // ✅
 }
 
 /**
-	@brief
-	rnd_init() is called when the system wants the storage engine to do a table
-	scan. See the example in the introduction at the top of this file to see when
-	rnd_init() is called.
-
-	@details
-	Called from filesort.cc, records.cc, sql_handler.cc, sql_select.cc, sql_table.cc,
-	and sql_update.cc.
-
-	@see
-	filesort.cc, records.cc, sql_handler.cc, sql_select.cc, sql_table.cc and sql_update.cc
+rnd_init() is called when the system wants the storage engine to do a table
+scan. Not required for VIDEX.
 */
-int ha_videx::rnd_init(bool scan) // ✅
+int ha_videx::rnd_init(bool scan)
 {
 	DBUG_ENTER("ha_videx::rnd_init");
 	DBUG_RETURN(0);
 }
 
-int ha_videx::rnd_end() // ✅
+int ha_videx::rnd_end()
 {
 	DBUG_ENTER("ha_videx::rnd_end");
 	DBUG_RETURN(0);
 }
 
 /**
-	@brief
-	This is called for each row of the table scan. When you run out of records
-	you should return HA_ERR_END_OF_FILE. Fill buff up with the row information.
-	The Field structure for the table is the key to getting data into buf
-	in a manner that will allow the server to understand it.
-
-	@details
-	Called from filesort.cc, records.cc, sql_handler.cc, sql_select.cc, sql_table.cc,
-	and sql_update.cc.
-
-	@see
-	filesort.cc, records.cc, sql_handler.cc, sql_select.cc, sql_table.cc and sql_update.cc
+This is called for each row of the table scan. Not required for VIDEX.
 */
-int ha_videx::rnd_next(uchar *buf) // ✅
+int ha_videx::rnd_next(uchar *buf)
 {
 	int rc;
 	DBUG_ENTER("ha_videx::rnd_next");
@@ -564,19 +556,10 @@ int ha_videx::rnd_next(uchar *buf) // ✅
 }
 
 /**
-	@brief
-	This is like rnd_next, but you are given a position to use
-	to determine the row. The position will be of the type that you stored in
-	ref. You can use ha_get_ptr(pos,ref_length) to retrieve whatever key
-	or position you saved when position() was called.
-
-	@details
-	Called from filesort.cc, records.cc, sql_insert.cc, sql_select.cc, and sql_update.cc.
-
-	@see
-	filesort.cc, records.cc, sql_insert.cc, sql_select.cc and sql_update.cc
+This is like rnd_next, but you are given a position to use
+to determine the row. Not required for VIDEX.
 */
-int ha_videx::rnd_pos(uchar *buf, uchar *pos) // ✅
+int ha_videx::rnd_pos(uchar *buf, uchar *pos)
 {
 	int rc;
 	DBUG_ENTER("ha_videx::rnd_pos");
@@ -585,186 +568,64 @@ int ha_videx::rnd_pos(uchar *buf, uchar *pos) // ✅
 }
 
 /**
-	@brief
-	position() is called after each call to rnd_next() if the data needs
-	to be ordered. You can do something like the following to store
-	the position:
-	@code
-	my_store_ptr(ref, ref_length, current_position);
-	@endcode
-
-	@details
-	The server uses ref to store data. ref_length in the above case is
-	the size needed to store current_position. ref is just a byte array
-	that the server will maintain. If you are using offsets to mark rows, then
-	current_position should be the offset. If it is a primary key like in
-	BDB, then it needs to be a primary key.
-
-	Called from filesort.cc, sql_select.cc, sql_delete.cc, and sql_update.cc.
-
-	@see
-	filesort.cc, sql_select.cc, sql_delete.cc and sql_update.cc
+position() is called after each call to rnd_next() if the data needs
+to be ordered. Not required for VIDEX.
 */
-void ha_videx::position(const uchar *record) // ✅
+void ha_videx::position(const uchar *record)
 {
 	DBUG_ENTER("ha_videx::position");
 	DBUG_VOID_RETURN;
 }
 
 /**
-	@brief
-	::info() is used to return information to the optimizer. See my_base.h for
-	the complete description.
-
-	@details
-	Currently this table handler doesn't implement most of the fields really needed.
-	SHOW also makes use of this data.
-
-	You will probably want to have the following in your code:
-	@code
-	if (records < 2)
-		records = 2;
-	@endcode
-	The reason is that the server will optimize for cases of only a single
-	record. If, in a table scan, you don't know the number of records, it
-	will probably be better to set records to two so you can return as many
-	records as you need. Along with records, a few more variables you may wish
-	to set are:
-		records
-		deleted
-		data_file_length
-		index_file_length
-		delete_length
-		check_time
-	Take a look at the public variables in handler.h for more information.
-
-	Called in filesort.cc, ha_heap.cc, item_sum.cc, opt_sum.cc, sql_delete.cc,
-	sql_delete.cc, sql_derived.cc, sql_select.cc, sql_select.cc, sql_select.cc,
-	sql_select.cc, sql_select.cc, sql_show.cc, sql_show.cc, sql_show.cc, sql_show.cc,
-	sql_table.cc, sql_union.cc, and sql_update.cc.
-
-	@see
-	filesort.cc, ha_heap.cc, item_sum.cc, opt_sum.cc, sql_delete.cc, sql_delete.cc,
-	sql_derived.cc, sql_select.cc, sql_select.cc, sql_select.cc, sql_select.cc,
-	sql_select.cc, sql_show.cc, sql_show.cc, sql_show.cc, sql_show.cc, sql_table.cc,
-	sql_union.cc and sql_update.cc
+Returns table statistics to the server; fills fields in the handler object.
+@return 0 on success or HA_ERR_*.
 */
-int ha_videx::info(uint flag) // ✅
+
+int ha_videx::info(uint flag)
 {
 	return (info_low(flag, false));
 }
 
 /**
-	@brief
-	extra() is called whenever the server wishes to send a hint to
-	the storage engine. The myisam engine implements the most hints.
-	ha_innodb.cc has the most exhaustive list of these hints.
-
-	@see
-	ha_innodb.cc
+Provides extra hints to the handler. Not required for VIDEX.
+@return 0 or error code.
 */
+
 int ha_videx::extra(enum ha_extra_function operation)
 {
 	DBUG_ENTER("ha_videx::extra");
-	// TODO:
 	DBUG_RETURN(0);
 }
+
+/**
+MySQL calls this method at the end of each statement */
 
 int ha_videx::reset()
 {
 	DBUG_ENTER("ha_videx::reset");
-	// TODO:
 	DBUG_RETURN(0);
 }
 
-// /**
-//   @brief
-//   Used to delete all rows in a table, including cases of truncate and cases where
-//   the optimizer realizes that all rows will be removed as a result of an SQL statement.
-
-//   @details
-//   Called from item_sum.cc by Item_func_group_concat::clear(),
-//   Item_sum_count_distinct::clear(), and Item_func_group_concat::clear().
-//   Called from sql_delete.cc by mysql_delete().
-//   Called from sql_select.cc by JOIN::reinit().
-//   Called from sql_union.cc by st_select_lex_unit::exec().
-
-//   @see
-//   Item_func_group_concat::clear(), Item_sum_count_distinct::clear() and
-//   Item_func_group_concat::clear() in item_sum.cc;
-//   mysql_delete() in sql_delete.cc;
-//   JOIN::reinit() in sql_select.cc and
-//   st_select_lex_unit::exec() in sql_union.cc.
-// */
-// int ha_videx::delete_all_rows() // ✅
-// {
-//   DBUG_ENTER("ha_videx::delete_all_rows");
-//   DBUG_RETURN(HA_ERR_WRONG_COMMAND);
-// }
-
 /**
-	@brief
-	This create a lock on the table. If you are implementing a storage engine
-	that can handle transacations look at ha_berkely.cc to see how you will
-	want to go about doing this. Otherwise you should consider calling flock()
-	here. Hint: Read the section "locking functions for mysql" in lock.cc to understand
-	this.
+External lock per table; no-op for VIDEX.
+@return 0. */
 
-	@details
-	Called from lock.cc by lock_external() and unlock_external(). Also called
-	from sql_table.cc by copy_data_between_tables().
-
-	@see
-	lock.cc by lock_external() and unlock_external() in lock.cc;
-	the section "locking functions for mysql" in lock.cc;
-	copy_data_between_tables() in sql_table.cc.
-*/
-int ha_videx::external_lock(THD *thd, int lock_type) // ✅
+int ha_videx::external_lock(THD *thd, int lock_type)
 {
 	DBUG_ENTER("ha_videx::external_lock");
 	DBUG_RETURN(0);
 }
 
 /**
-	@brief
-	The idea with handler::store_lock() is: The statement decides which locks
-	should be needed for the table. For updates/deletes/inserts we get WRITE
-	locks, for SELECT... we get read locks.
-
-	@details
-	Before adding the lock into the table lock handler (see thr_lock.c),
-	mysqld calls store lock with the requested locks. Store lock can now
-	modify a write lock to a read lock (or some other lock), ignore the
-	lock (if we don't want to use MariaDB table locks at all), or add locks
-	for many tables (like we do when we are using a MERGE handler).
-
-	Berkeley DB, for example, changes all WRITE locks to TL_WRITE_ALLOW_WRITE
-	(which signals that we are doing WRITES, but are still allowing other
-	readers and writers).
-
-	When releasing locks, store_lock() is also called. In this case one
-	usually doesn't have to do anything.
-
-	In some exceptional cases MariaDB may send a request for a TL_IGNORE;
-	This means that we are requesting the same lock as last time and this
-	should also be ignored. (This may happen when someone does a flush
-	table when we have opened a part of the tables, in which case mysqld
-	closes and reopens the tables and tries to get the same locks at last
-	time). In the future we will probably try to remove this.
-
-	Called from lock.cc by get_lock_data().
-
-	@note
-	In this method one should NEVER rely on table->in_use, it may, in fact,
-	refer to a different thread! (this happens if get_lock_data() is called
-	from mysql_lock_abort_for_thread() function)
-
-	@see
-	get_lock_data() in lock.cc
+Converts a MySQL table lock in 'lock' to the engine representation.
+Not required for VIDEX.
+@return pointer to the current element in 'to'.
 */
+
 THR_LOCK_DATA **ha_videx::store_lock(THD *thd,
                                        THR_LOCK_DATA **to,
-                                       enum thr_lock_type lock_type) // ✅
+                                       enum thr_lock_type lock_type)
 {
 	if (lock_type != TL_IGNORE && lock.type == TL_UNLOCK)
 		lock.type=lock_type;
@@ -773,22 +634,18 @@ THR_LOCK_DATA **ha_videx::store_lock(THD *thd,
 }
 
 /**
-	@brief
-	Given a starting key and an ending key, estimate the number of rows that
-	will exist between the two keys.
-	The handler can also optionally update the 'pages' parameter with the page
-	number that contains the min and max keys. This will help the optimizer
-	to know if two ranges are partly on the same pages and if the min and
-	max key are on the same page.
-
-	@details
-	end_key may be empty, in which case determine if start_key matches any rows.
-
-	Called from opt_range.cc by check_quick_keys().
-
-	@see
-	check_quick_keys() in opt_range.cc
+* Estimates the number of index records in a specific range via VIDEX HTTP.
+* Working principle: VIDEX will forward requests via HTTP to the external VIDEX-Statistic-Server (launched in a RESTful manner).
+* If the request fails, a default value of 10 will be returned.
+* Reference link: For an implementation of VIDEX-Statistic-Server, see https://github.com/bytedance/videx.
+* We plan to introduce it into the official MariaDB repository in a subsequent PR.
+* @param keynr: The index number of the key
+* @param min_key: The minimum key value of the range
+* @param max_key: The maximum key value of the range
+* @param pages: Page range information (present as a parameter but not used in the function)
+* @return estimated number of rows.
 */
+
 ha_rows ha_videx::records_in_range(uint keynr,
                                      const key_range *min_key,
                                      const key_range *max_key,
@@ -800,20 +657,14 @@ ha_rows ha_videx::records_in_range(uint keynr,
 	key = table->key_info + active_index;
 
 	VidexJsonItem request_item = construct_request(table->s->db.str, table->s->table_name.str, __PRETTY_FUNCTION__);
+	videx_log_ins.markRecordInRange(FUNC_FILE_LINE, min_key, max_key, key, &request_item);
 
 	std::string n_rows_str;
-	ha_rows n_rows = 1;
+	ha_rows n_rows;
 	THD* thd = ha_thd();
   	int error = ask_from_videx_http(request_item, n_rows_str, thd);
 	if (error) {
-		// Mock data
-		VidexStringMap res_json;
-		res_json["customer #@# CUSTOMER_FK1"] = "58";
-		res_json["customer #@# idx_customer_nationkey_mktsegment"] = "11";
-		res_json["orders #@# idx_orders_status_date"] = "500";
-
-		std::string concat_n_rows = std::string(table->s->table_name.str) + " #@# " + std::string(key->name.str);
-		n_rows = std::stoull(res_json[concat_n_rows]);
+		n_rows = 10; // default number to force index
 	}
 	else {
 		n_rows = std::stoull(n_rows_str);
@@ -822,31 +673,8 @@ ha_rows ha_videx::records_in_range(uint keynr,
 	DBUG_RETURN(n_rows);
 }
 
-ha_rows ha_videx::estimate_rows_upper_bound()
-{
-	DBUG_ENTER("ha_videx::estimate_rows_upper_bound");
-	// TODO:
-	DBUG_RETURN(10);
-}
-
 /**
-	@brief
-	create() is called to create a database. The variable name will have the name
-	of the table.
-
-	@details
-	When create() is called you do not need to worry about
-	opening the table. Also, the .frm file will have already been
-	created so adjusting create_info is not necessary. You can overwrite
-	the .frm file at this point if you wish to change the table
-	definition, but there are no methods currently provided for doing
-	so.
-
-	Called from handle.cc by ha_create_table().
-
-	@see
-	ha_create_table() in handle.cc
-*/
+Create a new table to an VIDEX database. Not required for VIDEX. */
 
 int ha_videx::create(const char *name, TABLE *table_arg,
                        HA_CREATE_INFO *create_info)
@@ -856,40 +684,35 @@ int ha_videx::create(const char *name, TABLE *table_arg,
 	DBUG_RETURN(0);
 }
 
-int ha_videx::delete_table(const char *name) // ✅
+int ha_videx::delete_table(const char *name)
 {
 	DBUG_ENTER("ha_videx::delete_table");
-	/* This is not implemented but we want someone to be able that it works. */
 	DBUG_RETURN(0);
 }
 
-int ha_videx::rename_table(const char* from, const char* to) // ✅
+int ha_videx::rename_table(const char* from, const char* to)
 {
 	DBUG_ENTER("ha_videx::rename_table");
 	DBUG_RETURN(0);
 }
 
 /**
-	**************************************************************************
-	* DS-MRR implementation
-	**************************************************************************
+DS-MRR implementation.
 */
 
-/**
-	Multi Range Read interface, DS-MRR calls */
 int ha_videx::multi_range_read_init(
 	RANGE_SEQ_IF*	seq,
 	void*		seq_init_param,
 	uint		n_ranges,
 	uint		mode,
-	HANDLER_BUFFER*	buf) // ✅
+	HANDLER_BUFFER*	buf)
 {
 	return(m_ds_mrr.dsmrr_init(this, seq, seq_init_param,
 				 n_ranges, mode, buf));
 }
 
 int ha_videx::multi_range_read_next(
-	range_id_t*		range_info) // ✅
+	range_id_t*		range_info)
 {
 	return(m_ds_mrr.dsmrr_next(range_info));
 }
@@ -902,14 +725,9 @@ ha_rows ha_videx::multi_range_read_info_const(
 	uint*		bufsz,
 	uint*		flags,
 	ha_rows         limit,
-	Cost_estimate*	cost) // ✅
+	Cost_estimate*	cost)
 {
-	/* See comments in ha_myisam::multi_range_read_info_const */
 	m_ds_mrr.init(this, table);
-
-	// if (m_prebuilt->select_lock_type != LOCK_NONE) {
-	// 	*flags |= HA_MRR_USE_DEFAULT_IMPL;
-	// }
 
 	return (m_ds_mrr.dsmrr_info_const(keyno, seq, seq_init_param,
 									   n_ranges,
@@ -923,7 +741,7 @@ ha_rows ha_videx::multi_range_read_info(
 	uint		key_parts,
 	uint*		bufsz,
 	uint*		flags,
-	Cost_estimate*	cost) // ✅
+	Cost_estimate*	cost)
 {
 	m_ds_mrr.init(this, table);
 	return (m_ds_mrr.dsmrr_info(keyno, n_ranges, keys, key_parts, bufsz,
@@ -931,46 +749,59 @@ ha_rows ha_videx::multi_range_read_info(
 }
 
 int ha_videx::multi_range_read_explain_info(uint mrr_mode,
-	char *str, size_t size) // ✅
+	char *str, size_t size)
 {
 	return(m_ds_mrr.dsmrr_explain_info(mrr_mode, str, size));
 }
 
-/** Attempt to push down an index condition.
-@param[in] keyno MySQL key number
-@param[in] idx_cond Index condition to be checked
-@return Part of idx_cond which the handler will not evaluate */
+/**
+* Attempt to push down an index condition.
+* @param keyno MySQL key number
+* @param idx_cond Index condition to be checked
+* @return Part of idx_cond which the handler will not evaluate
+*/
 
 class Item* ha_videx::idx_cond_push(
 	uint		keyno,
-	class Item*	idx_cond) // ✅
+	class Item*	idx_cond)
 {
 	DBUG_ENTER("ha_videx::idx_cond_push");
 	DBUG_ASSERT(keyno != MAX_KEY);
 	DBUG_ASSERT(idx_cond != NULL);
 
-	// /* We can only evaluate the condition if all columns are stored.*/
-	// dict_index_t* idx  = innobase_get_index(keyno);
-	// if (idx && dict_index_has_virtual(idx)) {
-	// 	DBUG_RETURN(idx_cond);
-	// }
-
 	pushed_idx_cond = idx_cond;
 	pushed_idx_cond_keyno = keyno;
 	in_range_check_pushed_down = TRUE;
-	/* We will evaluate the condition entirely */
 	DBUG_RETURN(NULL);
 }
 
+/**
+ * A very important function. When a query arrives, MariaDB calls this function to initialize the information of a table.
+ * In a session, this function is only called once by the MariaDB query optimizer.
+ * VIDEX requests the `videx_stats_server` to return various statistics of a single table, including:
+ *  stat_n_rows: The number of rows in the table.
+ *  stat_clustered_index_size: The size of the clustered index.
+ *  stat_sum_of_other_index_sizes: The sum of sizes of other indexes.
+ *  data_file_length: The size of the data file.
+ *  index_file_length: The length of the index file.
+ *  data_free_length: The length of free space in the data file.
+ *
+ *  [Very Important]
+ *  rec_per_key of several columns: require NDV algorithm
+ *
+ * Returns statistics information of the table to the MariaDB interpreter, in various fields of the handle object.
+ * @param[in]      flag            what information is requested
+ * @param[in]      is_analyze      True if called from "::analyze()".
+ * @return HA_ERR_* error code or 0
+ */
+
 int ha_videx::info_low(uint flag, bool is_analyze)
 {
-	// dict_table_t*	ib_table;
 	uint64_t	n_rows;
 	char		path[FN_REFLEN];
-	// os_file_stat_t	stat_info;
 
-	DBUG_ENTER("ha_videx::info");
-	DEBUG_SYNC_C("ha_innobase_info_low");
+	DBUG_ENTER("ha_videx::info_low");
+	DEBUG_SYNC_C("ha_videx_info_low");
 
 	// construct request
 	VidexStringMap res_json;
@@ -989,77 +820,17 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 			field->add_property_nonan("store_length", key->key_part[j].store_length);
 		}
 	}
-  
 	DBUG_PRINT("info", ("Request JSON: %s", request_item.to_json().c_str()));
-	std::cout << "Request JSON:" << std::endl;
-	std::cout << request_item.to_json() << std::endl;
-	std::cout << "=== END DEBUG OUTPUT ===" << std::endl;
 
 	THD* thd = ha_thd();
 	int error = ask_from_videx_http(request_item, res_json, thd);
   	if (error) {
   		std::cout << "ask_from_videx_http failed, using default values" << std::endl;
-  		// Set default values when HTTP request fails
-
-		// supplier table
-		res_json["supplier #@# stat_n_rows"] = "100";
-		res_json["supplier #@# data_file_length"] = "49152";
-		res_json["supplier #@# index_file_length"] = "32768";
-  		res_json["supplier #@# data_free_length"] = "0";
-		res_json["supplier #@# rec_per_key #@# PRIMARY #@# S_SUPPKEY"] = "1";
-		res_json["supplier #@# rec_per_key #@# SUPPLIER_FK1 #@# S_NATIONKEY"] = "4";
-		res_json["supplier #@# rec_per_key #@# SUPPLIER_FK1 #@# S_SUPPKEY"] = "1";
-		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_NATIONKEY"] = "4";
-		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_SUPPKEY"] = "1";
-		res_json["supplier #@# rec_per_key #@# idx_S_NATIONKEY_S_SUPPKEY_S_NAME #@# S_NAME"] = "1";
-
-		// lineitem table
-		res_json["lineitem #@# stat_n_rows"] = "56251";
-		res_json["lineitem #@# data_file_length"] = "8929280";
-		res_json["lineitem #@# index_file_length"] = "5816320";
-  		res_json["lineitem #@# data_free_length"] = "0";
-		res_json["lineitem #@# rec_per_key #@# PRIMARY #@# L_ID"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_UK1 #@# L_ORDERKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_UK1 #@# L_LINENUMBER"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK1 #@# L_ORDERKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK1 #@# L_ID"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_PARTKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_SUPPKEY"] = "1";
-		res_json["lineitem #@# rec_per_key #@# LINEITEM_FK2 #@# L_ID"] = "1";
-
-		// orders table
-		res_json["orders #@# stat_n_rows"] = "14907";
-		res_json["orders #@# data_file_length"] = "2637824";
-		res_json["orders #@# index_file_length"] = "245760";
-  		res_json["orders #@# data_free_length"] = "0";
-		res_json["orders #@# rec_per_key #@# PRIMARY #@# O_ORDERKEY"] = "1";
-		res_json["orders #@# rec_per_key #@# ORDERS_FK1 #@# O_CUSTKEY"] = "1";
-		res_json["orders #@# rec_per_key #@# ORDERS_FK1 #@# O_ORDERKEY"] = "1";
-		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERSTATUS"] = "4969";
-		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERDATE"] = "5";
-		res_json["orders #@# rec_per_key #@# idx_orders_status_date #@# O_ORDERKEY"] = "1";
-
-		// nation table
-  		res_json["nation #@# stat_n_rows"] = "25";
-		res_json["nation #@# data_file_length"] = "16384";
-		res_json["nation #@# index_file_length"] = "16384";
-  		res_json["nation #@# data_free_length"] = "0";
-		res_json["nation #@# rec_per_key #@# PRIMARY #@# N_NATIONKEY"] = "1";
-		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_REGIONKEY"] = "5";
-		res_json["nation #@# rec_per_key #@# NATION_FK1 #@# N_NATIONKEY"] = "1";
-
-		// customer table
-		res_json["customer #@# stat_n_rows"] = "1545";
-		res_json["customer #@# data_file_length"] = "327680";
-		res_json["customer #@# index_file_length"] = "49152";
-  		res_json["customer #@# data_free_length"] = "0";
-		res_json["customer #@# rec_per_key #@# PRIMARY #@# C_CUSTKEY"] = "1";
-		res_json["customer #@# rec_per_key #@# CUSTOMER_FK1 #@# C_NATIONKEY"] = "61";
-		res_json["customer #@# rec_per_key #@# CUSTOMER_FK1 #@# C_CUSTKEY"] = "1";
+	  		DBUG_RETURN(0);
   	}
 	else {
 		// validate the returned json
-    	// stat_n_rows。stat_clustered_index_size。stat_sum_of_other_index_sizes。data_file_length。index_file_length。data_free_length
+		// stat_n_rows, stat_clustered_index_size, stat_sum_of_other_index_sizes, data_file_length, index_file_length, data_free_length
 		if (!(
 			videx_contains_key(res_json, "stat_n_rows") &&
 			videx_contains_key(res_json, "stat_clustered_index_size") &&
@@ -1073,183 +844,21 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 		}
 	}
 
-	// update_thd(ha_thd());
-	//
-	// m_prebuilt->trx->op_info = "returning various info to MariaDB";
-
-	// ib_table = m_prebuilt->table;
-	// DBUG_ASSERT(ib_table->get_ref_count() > 0);
-
-	// if (!ib_table->is_readable()
-	//     || srv_force_recovery >= SRV_FORCE_NO_UNDO_LOG_SCAN) {
-	// 	dict_stats_empty_table(ib_table);
- //        } else if (flag & HA_STATUS_TIME) {
-	// 	stats.update_time = ib_table->update_time;
-	// 	if (!is_analyze && !innobase_stats_on_metadata) {
-	// 		goto stats_fetch;
-	// 	}
-
-		// dberr_t ret;
-		// m_prebuilt->trx->op_info = "updating table statistics";
-
-// 		if (ib_table->stats_is_persistent()
-// 		    && !srv_read_only_mode
-// 		    && dict_stats_persistent_storage_check(false)
-// 		    == SCHEMA_OK) {
-// 			if (is_analyze) {
-// 				dict_stats_recalc_pool_del(ib_table->id,
-// 							   false);
-// recalc:
-// 				ret = statistics_init(ib_table, is_analyze);
-// 			} else {
-// 				/* This is e.g. 'SHOW INDEXES' */
-// 				ret = statistics_init(ib_table, is_analyze);
-// 				switch (ret) {
-// 				case DB_SUCCESS:
-// 				case DB_READ_ONLY:
-// 					break;
-// 				default:
-// 					goto error;
-// 				case DB_STATS_DO_NOT_EXIST:
-// 					if (!ib_table
-// 					    ->stats_is_auto_recalc()) {
-// 						break;
-// 					}
-//
-// 					if (opt_bootstrap) {
-// 						break;
-// 					}
-// #ifdef WITH_WSREP
-// 					if (wsrep_thd_skip_locking(
-// 						    m_user_thd)) {
-// 						break;
-// 					}
-// #endif
-// 					is_analyze = true;
-// 					goto recalc;
-// 				}
-// 			}
-// 		} else {
-// 			ret = dict_stats_update_transient(ib_table);
-// 			if (ret != DB_SUCCESS) {
-// error:
-// 				m_prebuilt->trx->op_info = "";
-// 				DBUG_RETURN(HA_ERR_GENERIC);
-// 			}
-// 		}
-
-// 		m_prebuilt->trx->op_info = "returning various info to MariaDB";
-// 	} else {
-// stats_fetch:
-// 		statistics_init(ib_table, false);
-// 	}
-
 	if (flag & HA_STATUS_VARIABLE) {
-
-		// ulint	stat_clustered_index_size;
-		// ulint	stat_sum_of_other_index_sizes;
-
-// #if !defined NO_ELISION && !defined SUX_LOCK_GENERIC
-// 		if (xbegin()) {
-// 			if (ib_table->stats_mutex_is_locked())
-// 				xabort();
-//
-// 			ut_ad(ib_table->stat_initialized());
-//
-// 			n_rows = ib_table->stat_n_rows;
-//
-// 			stat_clustered_index_size
-// 				= ib_table->stat_clustered_index_size;
-//
-// 			stat_sum_of_other_index_sizes
-// 				= ib_table->stat_sum_of_other_index_sizes;
-//
-// 			xend();
-// 		} else
-// #endif
-// 		{
-// 			ib_table->stats_shared_lock();
-//
-// 			ut_ad(ib_table->stat_initialized());
-//
-// 			n_rows = ib_table->stat_n_rows;
-//
-// 			stat_clustered_index_size
-// 				= ib_table->stat_clustered_index_size;
-//
-// 			stat_sum_of_other_index_sizes
-// 				= ib_table->stat_sum_of_other_index_sizes;
-//
-// 			ib_table->stats_shared_unlock();
-// 		}
-
-		std::string concat_stat_n_rows = std::string(table->s->table_name.str) + " #@# stat_n_rows";
-		n_rows = std::stoull(res_json[concat_stat_n_rows.c_str()]);
-		DBUG_PRINT("videx", ("n_rows: %lu", n_rows));
-
-		/*
-		The MySQL optimizer seems to assume in a left join that n_rows
-		is an accurate estimate if it is zero. Of course, it is not,
-		since we do not have any locks on the rows yet at this phase.
-		Since SHOW TABLE STATUS seems to call this function with the
-		HA_STATUS_TIME flag set, while the left join optimizer does not
-		set that flag, we add one to a zero value if the flag is not
-		set. That way SHOW TABLE STATUS will show the best estimate,
-		while the optimizer never sees the table empty. */
-
+		n_rows = std::stoull(res_json["stat_n_rows"]);
 		if (n_rows == 0 && !(flag & (HA_STATUS_TIME | HA_STATUS_OPEN))) {
 			n_rows++;
 		}
 
-		/* Fix bug#40386: Not flushing query cache after truncate.
-		n_rows can not be 0 unless the table is empty, set to 1
-		instead. The original problem of bug#29507 is actually
-		fixed in the server code. */
-		// if (thd_sql_command(m_user_thd) == SQLCOM_TRUNCATE) {
-
-		// 	n_rows = 1;
-
-		// 	/* We need to reset the m_prebuilt value too, otherwise
-		// 	checks for values greater than the last value written
-		// 	to the table will fail and the autoinc counter will
-		// 	not be updated. This will force write_row() into
-		// 	attempting an update of the table's AUTOINC counter. */
-
-		// 	m_prebuilt->autoinc_last_value = 0;
-		// }
-
 		stats.records = (ha_rows) n_rows;
 		stats.deleted = 0;
 
-		std::string concat_data_file_length = std::string(table->s->table_name.str) + " #@# data_file_length";
-		std::string concat_index_file_length = std::string(table->s->table_name.str) + " #@# index_file_length";
-
-	    stats.data_file_length = std::stoull(res_json[concat_data_file_length.c_str()]);
-	    stats.index_file_length = std::stoull(res_json[concat_index_file_length.c_str()]);
-		DBUG_PRINT("videx", ("stats.data_file_length: %llu", stats.data_file_length));
-		DBUG_PRINT("videx", ("stats.index_file_length: %llu", stats.index_file_length));
+	    stats.data_file_length = std::stoull(res_json["data_file_length"]);
+	    stats.index_file_length = std::stoull(res_json["index_file_length"]);
 	    if (flag & HA_STATUS_VARIABLE_EXTRA)
 	    {
-			std::string concat_data_free_length = std::string(table->s->table_name.str) + " #@# data_free_length";
-			stats.delete_length = std::stoull(res_json[concat_data_free_length.c_str()]);
-			DBUG_PRINT("videx", ("stats.delete_length: %llu", stats.delete_length));
+			stats.delete_length = std::stoull(res_json["data_free_length"]);
         }
-		// if (fil_space_t* space = ib_table->space) {
-		// 	const ulint size = space->physical_size();
-		// 	stats.data_file_length
-		// 		= ulonglong(stat_clustered_index_size)
-		// 		* size;
-		// 	stats.index_file_length
-		// 		= ulonglong(stat_sum_of_other_index_sizes)
-		// 		* size;
-		// 	if (flag & HA_STATUS_VARIABLE_EXTRA) {
-		// 		space->s_lock();
-		// 		stats.delete_length = 1024
-		// 			* fsp_get_available_space_in_free_extents(
-		// 			*space);
-		// 		space->s_unlock();
-		// 	}
-		// }
 		stats.check_time = 0;
 		stats.mrr_length_per_rec= (uint)ref_length +  8; // 8 = max(sizeof(void *));
 
@@ -1262,135 +871,25 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 	}
 
 	if (flag & HA_STATUS_CONST) {
-		/* Verify the number of index in InnoDB and MySQL
-		matches up. If m_prebuilt->clust_index_was_generated
-		holds, InnoDB defines GEN_CLUST_INDEX internally */
-		// ulint	num_innodb_index = UT_LIST_GET_LEN(ib_table->indexes)
-		// 	- m_prebuilt->clust_index_was_generated;
-		// if (table->s->keys < num_innodb_index) {
-		// 	/* If there are too many indexes defined
-		// 	inside InnoDB, ignore those that are being
-		// 	created, because MySQL will only consider
-		// 	the fully built indexes here. */
-		//
-		// 	for (const dict_index_t* index
-		// 		     = UT_LIST_GET_FIRST(ib_table->indexes);
-		// 	     index != NULL;
-		// 	     index = UT_LIST_GET_NEXT(indexes, index)) {
-		//
-		// 		/* First, online index creation is
-		// 		completed inside InnoDB, and then
-		// 		MySQL attempts to upgrade the
-		// 		meta-data lock so that it can rebuild
-		// 		the .frm file. If we get here in that
-		// 		time frame, dict_index_is_online_ddl()
-		// 		would not hold and the index would
-		// 		still not be included in TABLE_SHARE. */
-		// 		if (!index->is_committed()) {
-		// 			num_innodb_index--;
-		// 		}
-		// 	}
-		//
-		// 	if (table->s->keys < num_innodb_index
-		// 	    && innobase_fts_check_doc_id_index(
-		// 		    ib_table, NULL, NULL)
-		// 	    == FTS_EXIST_DOC_ID_INDEX) {
-		// 		num_innodb_index--;
-		// 	}
-		// }
-
-		// if (table->s->keys != num_innodb_index) {
-		// 	ib_table->dict_frm_mismatch = DICT_FRM_INCONSISTENT_KEYS;
-		// 	ib_push_frm_error(m_user_thd, ib_table, table, num_innodb_index, true);
-		// }
-
 		snprintf(path, sizeof(path), "%s/%s%s",
 			 mysql_data_home, table->s->normalized_path.str,
 			 reg_ext);
 
 		unpack_filename(path,path);
 
-		/* Note that we do not know the access time of the table,
-		nor the CHECK TABLE time, nor the UPDATE or INSERT time. */
-
-		// if (os_file_get_status(
-		// 	    path, &stat_info, false,
-		// 	    srv_read_only_mode) == DB_SUCCESS) {
-		// 	stats.create_time = (ulong) stat_info.ctime;
-		// }
-
-		// ib_table->stats_shared_lock();
-		// auto _ = make_scope_exit([ib_table]() {
-		// 	ib_table->stats_shared_unlock(); });
-		//
-		// ut_ad(ib_table->stat_initialized());
-
 		for (uint i = 0; i < table->s->keys; i++) {
 			ulong	j;
-
-			// dict_index_t* index = innobase_get_index(i);
-			//
-			// if (index == NULL) {
-			// 	ib_table->dict_frm_mismatch = DICT_FRM_INCONSISTENT_KEYS;
-			// 	ib_push_frm_error(m_user_thd, ib_table, table, num_innodb_index, true);
-			// 	break;
-			// }
-
 			KEY*	key = &table->key_info[i];
 
 			for (j = 0; j < key->ext_key_parts; j++) {
 
 				if ((key->algorithm == HA_KEY_ALG_FULLTEXT)
 				    || (key->algorithm == HA_KEY_ALG_RTREE)) {
-
-					/* The record per key does not apply to
-					FTS or Spatial indexes. */
-				/*
-					key->rec_per_key[j] = 1;
-					key->set_records_per_key(j, 1.0);
-				*/
 					continue;
 				}
 
-				// if (j + 1 > index->n_uniq) {
-				// 	sql_print_error(
-				// 		"Index %s of %s has %u columns"
-				// 	        " unique inside InnoDB, but "
-				// 		"server is asking statistics for"
-				// 	        " %lu columns. Have you mixed "
-				// 		"up .frm files from different "
-				// 		" installations? %s",
-				// 		index->name(),
-				// 		ib_table->name.m_name,
-				// 		index->n_uniq, j + 1,
-				// 		TROUBLESHOOTING_MSG);
-				// 	break;
-				// }
-
-				/* innodb_rec_per_key() will use
-				index->stat_n_diff_key_vals[] and the value we
-				pass index->table->stat_n_rows. Both are
-				calculated by ANALYZE and by the background
-				stats gathering thread (which kicks in when too
-				much of the table has been changed). In
-				addition table->stat_n_rows is adjusted with
-				each DML (e.g. ++ on row insert). Those
-				adjustments are not MVCC'ed and not even
-				reversed on rollback. So,
-				index->stat_n_diff_key_vals[] and
-				index->table->stat_n_rows could have been
-				calculated at different time. This is
-				acceptable. */
-
-				// ulong	rec_per_key_int = static_cast<ulong>(
-				// 	innodb_rec_per_key(index, j,
-				// 			   stats.records));
-				//
-				// if (rec_per_key_int == 0) {
-				// 	rec_per_key_int = 1;
-				// }
-
-				std::string concat_key = std::string(table->s->table_name.str) + " #@# rec_per_key #@# " + key->name.str + " #@# " + key->key_part[j].field->field_name.str;
+				// The #@# separator combines the index name and field name, making it easier to extract the corresponding statistical values from the JSON response.
+				std::string concat_key = "rec_per_key #@# " + std::string(key->name.str) + " #@# " + std::string(key->key_part[j].field->field_name.str);
 				ulong rec_per_key_int = 0;
 			  	if (videx_contains_key(res_json, concat_key.c_str())){
 		        	rec_per_key_int = std::stoul(res_json[concat_key.c_str()]);
@@ -1403,133 +902,24 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 		        	rec_per_key_int = 1;
 		        }
 			    key->rec_per_key[j] = rec_per_key_int;
-				DBUG_PRINT("videx", ("key->rec_per_key[%lu]: %lu", j, key->rec_per_key[j]));
 			}
 		}
 	}
-
-	// if (srv_force_recovery >= SRV_FORCE_NO_UNDO_LOG_SCAN) {
-	//
-	// 	goto func_exit;
-
-	// } else if (flag & HA_STATUS_ERRKEY) {
-	// 	const dict_index_t*	err_index;
-	//
-	// 	ut_a(m_prebuilt->trx);
-	// 	ut_a(m_prebuilt->trx->magic_n == TRX_MAGIC_N);
-	//
-	// 	err_index = trx_get_error_info(m_prebuilt->trx);
-	//
-	// 	if (err_index) {
-	// 		errkey = innobase_get_mysql_key_number_for_index(
-	// 				table, ib_table, err_index);
-	// 	} else {
-	// 		errkey = (unsigned int) (
-	// 			(m_prebuilt->trx->error_key_num
-	// 			 == ULINT_UNDEFINED)
-	// 				? ~0U
-	// 				: m_prebuilt->trx->error_key_num);
-	// 	}
-	// }
-
-	// if ((flag & HA_STATUS_AUTO) && table->found_next_number_field) {
-	// 	stats.auto_increment_value = innobase_peek_autoinc();
-	// }
-
-// func_exit:
-// 	m_prebuilt->trx->op_info = (char*)"";
-
 	DBUG_RETURN(0);
 }
 
 struct st_mysql_storage_engine videx_storage_engine=
 { MYSQL_HANDLERTON_INTERFACE_VERSION };
 
-static ulong srv_enum_var= 0;
-static ulong srv_ulong_var= 0;
-static double srv_double_var= 0;
-
-const char *enum_var_names[]=
-{
-	"e1", "e2", NullS
-};
-
-TYPELIB enum_var_typelib= CREATE_TYPELIB_FOR(enum_var_names);
-
-static MYSQL_SYSVAR_ENUM(
-	enum_var,                       // name
-	srv_enum_var,                   // varname
-	PLUGIN_VAR_RQCMDARG,            // opt
-	"Sample ENUM system variable",  // comment
-	NULL,                           // check
-	NULL,                           // update
-	0,                              // def
-	&enum_var_typelib);             // typelib
-
-static MYSQL_THDVAR_INT(int_var, PLUGIN_VAR_RQCMDARG, "-1..1",
-	NULL, NULL, 0, -1, 1, 0);
-
-static MYSQL_SYSVAR_ULONG(
-	ulong_var,
-	srv_ulong_var,
-	PLUGIN_VAR_RQCMDARG,
-	"0..1000",
-	NULL,
-	NULL,
-	8,
-	0,
-	1000,
-	0);
-
-static MYSQL_SYSVAR_DOUBLE(
-	double_var,
-	srv_double_var,
-	PLUGIN_VAR_RQCMDARG,
-	"0.500000..1000.500000",
-	NULL,
-	NULL,
-	8.5,
-	0.5,
-	1000.5,
-	0);                             // reserved always 0
-
-static MYSQL_THDVAR_DOUBLE(
-	double_thdvar,
-	PLUGIN_VAR_RQCMDARG,
-	"0.500000..1000.500000",
-	NULL,
-	NULL,
-	8.5,
-	0.5,
-	1000.5,
-	0);
-
-static MYSQL_THDVAR_INT(
-	deprecated_var, PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_DEPRECATED, "-1..1",
-	NULL, NULL, 0, -1, 1, 0);
-
 static struct st_mysql_sys_var* videx_system_variables[]= {
-	MYSQL_SYSVAR(enum_var), // enum variable 
-	MYSQL_SYSVAR(ulong_var), // ulong variable
-	MYSQL_SYSVAR(int_var), // int variable
-	MYSQL_SYSVAR(double_var), // double variable
-	MYSQL_SYSVAR(double_thdvar), // double variable for thread
-	MYSQL_SYSVAR(deprecated_var), // deprecated variable
 	NULL
 };
 
-// this is an example of SHOW_SIMPLE_FUNC and of my_snprintf() service
-// If this function would return an array, one should use SHOW_FUNC
 static int show_func_videx(MYSQL_THD thd, struct st_mysql_show_var *var,
 							 char *buf)
 {
 	var->type= SHOW_CHAR;
 	var->value= buf; // it's of SHOW_VAR_FUNC_BUFF_SIZE bytes
-	my_snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
-				"enum_var is %lu, ulong_var is %lu, int_var is %d, "
-				"double_var is %f, %.6sB", // %sB is a MariaDB extension
-				srv_enum_var, srv_ulong_var, THDVAR(thd, int_var),
-				srv_double_var, "really");
 	return 0;
 }
 
@@ -1547,15 +937,15 @@ maria_declare_plugin(videx)
 	MYSQL_STORAGE_ENGINE_PLUGIN,
 	&videx_storage_engine,
 	"VIDEX",
-	"Haibo Yang",
+	"Rong Kang, Haibo Yang",
 	"Disaggregated, Extensible Virtual Index Engine for What-If Analysis",
 	PLUGIN_LICENSE_GPL,
-	videx_init,                            /* Plugin Init */
-	NULL,                                         /* Plugin Deinit */
-	0x0001,                                       /* version number (0.1) */
-	func_status,                                  /* status variables */
+	videx_init,                            		/* Plugin Init */
+	NULL,                                       /* Plugin Deinit */
+	0x0001,                                     /* version number (0.1) */
+	func_status,                                /* status variables */
 	videx_system_variables,                     /* system variables */
-	"0.1",                                        /* string version */
-	MariaDB_PLUGIN_MATURITY_EXPERIMENTAL          /* maturity */
+	"0.1",                                      /* string version */
+	MariaDB_PLUGIN_MATURITY_EXPERIMENTAL        /* maturity */
 }
 maria_declare_plugin_end;
