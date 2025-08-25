@@ -190,15 +190,15 @@ videx_share::videx_share()
 
 static void videx_update_optimizer_costs(OPTIMIZER_COSTS *costs)
 {
-  /*
-    The following values were taken from MariaDB Server 11.8 in the function innobase_update_optimizer_costs(OPTIMIZER_COSTS *costs).
-	See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
-  */
-  costs->row_next_find_cost= 0.00007013;
-  costs->row_lookup_cost=    0.00076597;
-  costs->key_next_find_cost= 0.00009900;
-  costs->key_lookup_cost=    0.00079112;
-  costs->row_copy_cost=      0.00006087;
+	/*
+	* The following values were taken from MariaDB Server 11.8 in the function innobase_update_optimizer_costs(OPTIMIZER_COSTS *costs).
+	* See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	*/
+	costs->row_next_find_cost= 0.00007013;
+	costs->row_lookup_cost=    0.00076597;
+	costs->key_next_find_cost= 0.00009900;
+	costs->key_lookup_cost=    0.00079112;
+	costs->row_copy_cost=      0.00006087;
 }
 
 static int videx_init(void *p)
@@ -333,8 +333,8 @@ uint ha_videx::max_supported_keys() const
 uint ha_videx::max_supported_key_length() const
 {
 	/*
-		This value was taken from MariaDB Server 11.8 in the function innobase_max_supported_key_length()
-		See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	 * This value was taken from MariaDB Server 11.8 in the function innobase_max_supported_key_length()
+	 * See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
 	*/
 	return(3500);
 }
@@ -342,8 +342,8 @@ uint ha_videx::max_supported_key_length() const
 uint ha_videx::max_supported_key_part_length() const
 {
 	/*
-		This value was taken from MariaDB Server 11.8 in the function innobase_max_supported_key_part_length()
-		See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	 * This value was taken from MariaDB Server 11.8 in the function innobase_max_supported_key_part_length()
+	 * See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
 	*/
 	return(3072);
 }
@@ -394,8 +394,8 @@ int ha_videx::open(const char *name, int mode, uint test_if_locked)
 	}
 
 	/*
-		This value was taken from MariaDB Server 11.8 in the function open(), where stats.block_size is set to srv_page_size.
-		See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
+	 * This value was taken from MariaDB Server 11.8 in the function open(), where stats.block_size is set to srv_page_size.
+	 * See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
 	*/
 	stats.block_size = 16384;
 
