@@ -42,57 +42,61 @@ class THD;
 
 #define FUNC_FILE_LINE __PRETTY_FUNCTION__, __FILE__, __LINE__
 
-
-class VidexLogUtils {
+class VidexLogUtils
+{
 private:
-    int count = 0;
-    std::string tag = "^_^";
-    bool enable_cout = true;
-    bool enable_trace = false;
-    std::unordered_map<std::string, std::string> data;
+  int count= 0;
+  std::string tag= "^_^";
+  bool enable_cout= true;
+  bool enable_trace= false;
+  std::unordered_map<std::string, std::string> data;
+
 public:
-    void set_cout(bool p_show_cout) {
-        this->enable_cout = p_show_cout;
-    }
+  void set_cout(bool p_show_cout) { this->enable_cout= p_show_cout; }
 
-    void set_enable_trace(bool p_enable_trace) {
-        this->enable_trace = p_enable_trace;
-    }
-    
-    void set_tag(const std::string &new_tag) {
-        this->tag = new_tag;
-    }
+  void set_enable_trace(bool p_enable_trace)
+  {
+    this->enable_trace= p_enable_trace;
+  }
 
-    void markHaFuncPassby(const std::string &func, const std::string &file, const int line,
-                          const std::string &others = "", bool silent = true);
+  void set_tag(const std::string &new_tag) { this->tag= new_tag; }
 
-    void markPassbyUnexpected(const std::string &func, const std::string &file, const int line);
+  void markHaFuncPassby(const std::string &func, const std::string &file,
+                        const int line, const std::string &others= "",
+                        bool silent= true);
 
-    void NotMarkPassby(const std::string &, const std::string &, const int );
-    
-    template<typename V>
-    void markPassby_DBTB_otherType(const std::string &func, const std::string &file, const int line, 
-    const std::string &db_name, const std::string &tb_name, 
-    V value) {
-        std::ostringstream oss;
-        oss << "db=" << db_name << ", tb=" << tb_name << ", value=" << value;
-        markHaFuncPassby(func, file, line, oss.str(), false);
-    }
+  void markPassbyUnexpected(const std::string &func, const std::string &file,
+                            const int line);
 
-    template<typename V>
-    void markPassby_otherType(const std::string &func, const std::string &file, const int line, V value) {
-        std::ostringstream oss;
-        oss << value;
-        markHaFuncPassby(func, file, line, oss.str());
-    }
+  void NotMarkPassby(const std::string &, const std::string &, const int);
 
-    void markRecordInRange([[maybe_unused]]const std::string &func, [[maybe_unused]]const std::string &file,
-                           [[maybe_unused]]const int line, const key_range *min_key, const key_range *max_key,
-                           KEY *key, VidexJsonItem *req_json);
+  template <typename V>
+  void markPassby_DBTB_otherType(const std::string &func,
+                                 const std::string &file, const int line,
+                                 const std::string &db_name,
+                                 const std::string &tb_name, V value)
+  {
+    std::ostringstream oss;
+    oss << "db=" << db_name << ", tb=" << tb_name << ", value=" << value;
+    markHaFuncPassby(func, file, line, oss.str(), false);
+  }
+
+  template <typename V>
+  void markPassby_otherType(const std::string &func, const std::string &file,
+                            const int line, V value)
+  {
+    std::ostringstream oss;
+    oss << value;
+    markHaFuncPassby(func, file, line, oss.str());
+  }
+
+  void markRecordInRange([[maybe_unused]] const std::string &func,
+                         [[maybe_unused]] const std::string &file,
+                         [[maybe_unused]] const int line,
+                         const key_range *min_key, const key_range *max_key,
+                         KEY *key, VidexJsonItem *req_json);
 };
 
-
 extern VidexLogUtils videx_log_ins;
-
 
 #endif // VIDEX_LOG_UTILS
