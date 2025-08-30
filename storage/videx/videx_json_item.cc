@@ -23,9 +23,22 @@
 #include "videx_json_item.h"
 
 /**
- * A simple parsing function is written here instead,
+ * @file videx_json_item.cc
+ * 
+ * @brief
+ * JSON utility implementations:
+ * 1. videx_parse_simple_json():
+ *    - Linear scanning parser (no recursion/validation)
+ *    - Returns standardized error codes/messages
+ * 2. videx_escape_double_quotes():
+ *    - Secures JSON output against injection attacks
+ *    - Replaces control characters with spaces
+ */
+
+/**
+ * It's to provide a simple but robust parsing function here,
  * since rapid_json always encounters strange segmentation faults across
- * platforms.
+ * platforms, especially on MacOS.
  *
  * @param json
  * @param code

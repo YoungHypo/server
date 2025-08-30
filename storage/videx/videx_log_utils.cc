@@ -325,6 +325,14 @@ void subha_parse_key_range(const key_range *key_range, const KEY *index,
 /**
 Logs and serializes min/max key bounds for a given index into `req_json`.
 Also prints a concise human-readable summary for debugging.
+
+@param func Function name for logging.
+@param file Source file name for logging.
+@param line Line number for logging.
+@param min_key Minimum key range.
+@param max_key Maximum key range.
+@param key Index key information.
+@param req_json JSON object to store serialized key range.
 */
 
 void VidexLogUtils::markRecordInRange([[maybe_unused]] const std::string &func,

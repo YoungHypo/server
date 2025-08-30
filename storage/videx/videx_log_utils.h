@@ -20,6 +20,20 @@
   along with this program; if not, write to the Free Software
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+/** @file videx_log_utils.h
+ * 
+ * @brief
+ * Core utilities for Videx storage engine logging and key range serialization
+ * 
+ * @note
+ * 1. Provides logging tool.
+ * 2. [Most important] Implements JSON conversion for MariaDB key_range structures
+ * 
+ * @see
+ * - Key range serialization implementation: markRecordInRange() in videx_log_utils.cc
+ */
+
+
 #ifndef VIDEX_LOG_UTILS
 #define VIDEX_LOG_UTILS
 

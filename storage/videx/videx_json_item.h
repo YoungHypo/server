@@ -20,6 +20,23 @@
   along with this program; if not, write to the Free Software
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+/** @file videx_json_item.h
+ * 
+ * @brief
+ * Lightweight JSON utilities for MariaDB storage engine development:
+ * - VidexJsonItem class: Hierarchical JSON builder.
+ * - Simple parser: Extracts code/message/data from flat JSON structures, at most 2-level nested.
+ * 
+ * @note
+ * 1. Parser supports max 2-level nested JSON structures
+ * 2. Builder automatically escapes special characters (\"\\)
+ * 3. Use construct_request() for standard API request templates
+ * 4. Cross-platform: Avoids rapid_json segmentation faults on macOS
+ * 
+ * @see
+ * - Implementation: videx_json_item.cc
+ */
+
 #ifndef VIDEX_JSON_ITEM_H
 #define VIDEX_JSON_ITEM_H
 
