@@ -73,7 +73,7 @@ void VidexLogUtils::markHaFuncPassby(const std::string &func,
 
   ss << " ____ " << func << " ____ File: " << file << ":" << line;
   if (enable_cout) {
-    std::cout << ss.str() << std::endl;
+    DBUG_PRINT("info", ("%s", ss.str().c_str()));
   }
   if (enable_trace) {
     // TODO not support for now, need to set thd and initialize trace_object
@@ -309,6 +309,6 @@ void VidexLogUtils::markRecordInRange([[maybe_unused]]const std::string &func, [
 
     std::stringstream ss;
     ss << "KEY: " << key->name.str << "   MIN_KEY: {" << std_info_min << "}, MAX_KEY: {"<<std_info_max << "}";
-    std::cout << std::endl << ss.str() << std::endl;
-    std::cout << "req_json = " << req_json->to_json() << std::endl;
+    DBUG_PRINT("info", ("%s", ss.str().c_str()));
+    DBUG_PRINT("info", ("req_json = %s", req_json->to_json().c_str()));
 }

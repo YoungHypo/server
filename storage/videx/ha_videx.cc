@@ -20,12 +20,139 @@
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "ha_videx.h"
+#include "my_global.h"                   /* ulonglong */
+#include "thr_lock.h"                    /* THR_LOCK, THR_LOCK_DATA */
+#include "handler.h"                     /* handler */
+#include "my_base.h"                     /* ha_rows */
+#include "table.h"
+#include <sql_acl.h>
+#include <sql_class.h>
+#include <my_sys.h>
+#include "scope.h"
+#include <my_service_manager.h>
+#include "videx_json_item.h"
+#include "videx_log_utils.h"
+#include <replication.h>
+#include <curl/curl.h>
 
-static MYSQL_THDVAR_STR(debug_skip_http, 
+/** Shared state used by all open VIDEX handlers. */
+class videx_share : public Handler_share {
+public:
+	mysql_mutex_t mutex;
+	THR_LOCK lock;
+	videx_share();
+	~videx_share()
+	{
+		thr_lock_delete(&lock);
+		mysql_mutex_destroy(&mutex);
+	}
+};
+
+/** Storage engine class. */
+class ha_videx: public handler
+{
+	THR_LOCK_DATA lock;
+	videx_share *share;
+	videx_share *get_share();
+
+public:
+	ha_videx(handlerton* hton, TABLE_SHARE* table_arg);
+	~ha_videx() override;
+
+	const char* table_type() const override;
+
+	Table_flags table_flags() const override;
+
+	ulong index_flags(uint idx, uint part, bool all_parts) const override;
+
+	uint max_supported_keys() const override;
+
+	uint max_supported_key_length() const override;
+
+	uint max_supported_key_part_length() const override;
+
+	void column_bitmaps_signal() override;
+
+	int open(const char *name, int mode, uint test_if_locked) override;
+
+	int close(void) override;
+
+	handler* clone(const char *name, MEM_ROOT *mem_root) override;
+
+	int rnd_init(bool scan) override;
+
+	int rnd_next(uchar *buf) override;
+
+	int rnd_pos(uchar *buf, uchar *pos) override;
+
+	void position(const uchar *record) override;
+
+	int info(uint) override;
+
+	THR_LOCK_DATA** store_lock(
+		THD*			thd,
+		THR_LOCK_DATA**		to,
+		thr_lock_type		lock_type) override;
+
+	ha_rows records_in_range(
+		uint                    inx,
+		const key_range*        min_key,
+		const key_range*        max_key,
+		page_range*             pages) override;
+
+	int create(const char *name, TABLE *table_arg, HA_CREATE_INFO *create_info) override;
+
+	int delete_table(const char *name) override;
+
+	int rename_table(const char* from, const char* to) override;
+
+	int multi_range_read_init(
+		RANGE_SEQ_IF*		seq,
+		void*			seq_init_param,
+		uint			n_ranges,
+		uint			mode,
+		HANDLER_BUFFER*		buf) override;
+
+	int multi_range_read_next(range_id_t *range_info) override;
+
+	ha_rows multi_range_read_info_const(
+		uint			keyno,
+		RANGE_SEQ_IF*		seq,
+		void*			seq_init_param,
+		uint			n_ranges,
+		uint*			bufsz,
+		uint*			flags,
+		ha_rows                 limit,
+		Cost_estimate*		cost) override;
+
+	ha_rows multi_range_read_info(uint keyno, uint n_ranges, uint keys,
+		uint key_parts, uint* bufsz, uint* flags,
+		Cost_estimate* cost) override;
+
+	int multi_range_read_explain_info(uint mrr_mode, char *str, size_t size) override;
+
+	Item* idx_cond_push(uint keyno, Item* idx_cond) override;
+
+	int info_low(uint flag, bool is_analyze);
+
+	/** The multi range read session object */
+	DsMrr_impl m_ds_mrr;
+
+	/** Flags that specificy the handler instance (table) capability. */
+	Table_flags m_int_table_flags;
+
+	/** Index into the server's primary key meta-data table->key_info{} */
+	uint m_primary_key;
+
+	/** this is set to 1 when we are starting a table scan but have
+	not yet fetched any row, else false */
+	bool m_start_of_scan;
+};
+
+static MYSQL_THDVAR_BOOL(debug_skip_http,
 	PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
 	"Skip HTTP requests for debugging (True/False)",
-	nullptr, nullptr, "False");
+	nullptr, nullptr, FALSE);
 
 static MYSQL_THDVAR_STR(server_ip,
 	PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
@@ -70,9 +197,9 @@ size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *ou
  */
  int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* thd) {
 	// Set DEBUG_SKIP_HTTP enabled for performance testing using mocked values.
-	const char *debug_skip_http = THDVAR(thd, debug_skip_http);
+	bool debug_skip_http = THDVAR(thd, debug_skip_http);
 	// If set to the string "True", it skips the HTTP request.
-	if (debug_skip_http && strcmp(debug_skip_http, "True") == 0) {
+	if (debug_skip_http) {
 		return 1;
 	}
 
@@ -89,7 +216,7 @@ size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *ou
 		videx_options = "{}";
 	}
 
-	std::cout << "VIDEX OPTIONS: " << videx_options << " IP: " << host_ip << std::endl;
+	DBUG_PRINT("info", ("VIDEX OPTIONS: %s IP: %s", videx_options, host_ip));
 	request.add_property("videx_options", videx_options);
   
 	std::string url = std::string("http://") + host_ip + "/ask_videx";
@@ -104,7 +231,7 @@ size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *ou
   
   
 		std::string request_str = request.to_json();
-		std::cout << request_str << std::endl;
+		DBUG_PRINT("info", ("request_str: %s", request_str.c_str()));
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_str.c_str());
   
 		// Set the headers
@@ -125,28 +252,27 @@ size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *ou
   
 		res_code = curl_easy_perform(curl);
 		if (res_code != CURLE_OK) {
-		  std::cout << "access videx_server failed res_code != curle_ok: " << host_ip << std::endl;
-			fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res_code));
+			sql_print_warning("VIDEX: access videx_server failed res_code != curle_ok: %s", host_ip);
 			return 1;
 		} else {
 			int code;
 			std::string message;
 			int error = videx_parse_simple_json(readBuffer.c_str(), code, message, res_json);
 			if (error) {
-				std::cout << "!__!__!__!__!__! JSON parse error: " << message << '\n';
+				sql_print_warning("VIDEX: JSON parse error: %s", message.c_str());
 				return 1;
 			} else {
 				if (message == "OK") {
-					std::cout << "access videx_server success: " << host_ip << std::endl;
+					DBUG_PRINT("info", ("access videx_server success: %s", host_ip));
 					return 0;
 				} else {
-					std::cout << "access videx_server success but msg != OK: " << readBuffer.c_str() << std::endl;
+					sql_print_warning("VIDEX: access videx_server success but msg != OK: %s", readBuffer.c_str());
 					return 1;
 				}
 			}
 		}
 	}
-	std::cout << "access videx_server failed curl = false: " << host_ip << std::endl;
+	sql_print_warning("VIDEX: access videx_server failed curl = false: %s", host_ip);
 	return 1;
   }
 
@@ -273,7 +399,6 @@ ha_videx::ha_videx(
 	handlerton*	hton,
 	TABLE_SHARE*	table_arg)
 	:handler(hton, table_arg),
-	m_user_thd(),
 	m_int_table_flags(HA_REC_NOT_IN_SEQ
 			  | HA_NULL_IN_KEY
 			  | HA_CAN_VIRTUAL_COLUMNS
@@ -294,8 +419,7 @@ ha_videx::ha_videx(
 			  | HA_CONCURRENT_OPTIMIZE
 			  | HA_CAN_SKIP_LOCKED
 		  ),
-	m_start_of_scan(),
-    m_mysql_has_locked()
+	m_start_of_scan()
 {}
 
 ha_videx::~ha_videx() = default;
@@ -367,11 +491,6 @@ uint ha_videx::max_supported_key_part_length() const
 	 * See more details in https://github.com/MariaDB/server/blob/11.8/storage/innobase/handler/ha_innodb.cc
 	*/
 	return(3072);
-}
-
-const key_map* ha_videx::keys_to_use_for_scanning()
-{
-	return(&key_map_full);
 }
 
 void ha_videx::column_bitmaps_signal()
@@ -448,105 +567,11 @@ int ha_videx::close(void)
 }
 
 handler* ha_videx::clone(
-	const char*	name,		/*!< in: table name */
-	MEM_ROOT*	mem_root)	/*!< in: memory context */
+	const char*     name,           /*!< in: table name */
+	MEM_ROOT*       mem_root)       /*!< in: memory context */
 {
 	DBUG_ENTER("ha_videx::clone");
 	DBUG_RETURN(NULL);
-}
-
-IO_AND_CPU_COST ha_videx::scan_time()
-{
-	DBUG_ENTER("ha_videx::scan_time");
-	DBUG_RETURN(handler::scan_time());
-}
-
-IO_AND_CPU_COST ha_videx::rnd_pos_time(ha_rows rows)
-{
-	DBUG_ENTER("ha_videx::rnd_pos_time");
-	DBUG_RETURN(handler::rnd_pos_time(rows));
-}
-
-/**
-write_row() inserts a row. see ha_tina.cc for examples — not required for VIDEX.
-*/
-
-int ha_videx::write_row(const uchar *buf)
-{
-	DBUG_ENTER("ha_videx::write_row");
-	DBUG_RETURN(0);
-}
-
-/**
-Updates a row. Not required for VIDEX.
-*/
-int ha_videx::update_row(const uchar *old_data, const uchar *new_data)
-{
-	DBUG_ENTER("ha_videx::update_row");
-	DBUG_RETURN(HA_ERR_WRONG_COMMAND);
-}
-
-/**
-Deletes a row. Not required for VIDEX.
-*/
-
-int ha_videx::delete_row(const uchar *buf)
-{
-	DBUG_ENTER("ha_videx::delete_row");
-
-	DBUG_RETURN(HA_ERR_WRONG_COMMAND);
-}
-
-void ha_videx::unlock_row()
-{
-	DBUG_ENTER("ha_videx::unlock_row");
-	DBUG_VOID_RETURN;
-}
-
-/**
-read forward through the index. Not required for VIDEX.
-*/
-
-int ha_videx::index_next(uchar *buf)
-{
-	int rc;
-	DBUG_ENTER("ha_videx::index_next");
-	rc= HA_ERR_WRONG_COMMAND;
-	DBUG_RETURN(rc);
-}
-
-/**
-read backwards through the index. Not required for VIDEX.
-*/
-
-int ha_videx::index_prev(uchar *buf)
-{
-	int rc;
-	DBUG_ENTER("ha_videx::index_prev");
-	rc= HA_ERR_WRONG_COMMAND;
-	DBUG_RETURN(rc);
-}
-
-/**
-asks for the first key in the index. Not required for VIDEX.
-*/
-int ha_videx::index_first(uchar *buf)
-{
-	int rc;
-	DBUG_ENTER("ha_videx::index_first");
-	rc= HA_ERR_WRONG_COMMAND;
-	DBUG_RETURN(rc);
-}
-
-/**
-asks for the last key in the index. Not required for VIDEX.
-*/
-int ha_videx::index_last(uchar *buf)
-{
-	int rc;
-	DBUG_ENTER("ha_videx::index_last");
-	rc= HA_ERR_WRONG_COMMAND;
-	DBUG_RETURN(rc);
 }
 
 /**
@@ -556,12 +581,6 @@ scan. Not required for VIDEX.
 int ha_videx::rnd_init(bool scan)
 {
 	DBUG_ENTER("ha_videx::rnd_init");
-	DBUG_RETURN(0);
-}
-
-int ha_videx::rnd_end()
-{
-	DBUG_ENTER("ha_videx::rnd_end");
 	DBUG_RETURN(0);
 }
 
@@ -606,36 +625,6 @@ Returns table statistics to the server; fills fields in the handler object.
 int ha_videx::info(uint flag)
 {
 	return (info_low(flag, false));
-}
-
-/**
-Provides extra hints to the handler. Not required for VIDEX.
-@return 0 or error code.
-*/
-
-int ha_videx::extra(enum ha_extra_function operation)
-{
-	DBUG_ENTER("ha_videx::extra");
-	DBUG_RETURN(0);
-}
-
-/**
-MySQL calls this method at the end of each statement */
-
-int ha_videx::reset()
-{
-	DBUG_ENTER("ha_videx::reset");
-	DBUG_RETURN(0);
-}
-
-/**
-External lock per table; no-op for VIDEX.
-@return 0. */
-
-int ha_videx::external_lock(THD *thd, int lock_type)
-{
-	DBUG_ENTER("ha_videx::external_lock");
-	DBUG_RETURN(0);
 }
 
 /**
@@ -846,8 +835,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 	THD* thd = ha_thd();
 	int error = ask_from_videx_http(request_item, res_json, thd);
   	if (error) {
-  		std::cout << "ask_from_videx_http failed, using default values" << std::endl;
-	  		DBUG_RETURN(0);
+  		DBUG_RETURN(0);
   	}
 	else {
 		// validate the returned json
@@ -860,7 +848,7 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 			videx_contains_key(res_json, "index_file_length") &&
 			videx_contains_key(res_json, "data_free_length")
 		)) {
-			std::cout << "res_json data error=0 but miss some key." << std::endl;
+			sql_print_warning("VIDEX: res_json data error=0 but miss some key.");
 			DBUG_RETURN(0);
 		}
 	}
@@ -938,13 +926,13 @@ static int show_func_videx(MYSQL_THD thd, struct st_mysql_show_var *var,
 	var->type= SHOW_CHAR;
 	var->value= buf;
 
-	const char *debug_skip_http = THDVAR(thd, debug_skip_http);
+	bool debug_skip_http = THDVAR(thd, debug_skip_http);
 	const char *videx_server = THDVAR(thd, server_ip);
 	const char *videx_options = THDVAR(thd, options);
 
 	snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
 		"debug_skip_http: %s, server_ip: %s, options: %s",
-		debug_skip_http, videx_server, videx_options);
+		debug_skip_http ? "TRUE" : "FALSE", videx_server, videx_options);
 
 	return 0;
 }
