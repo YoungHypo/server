@@ -18,7 +18,6 @@
 #include "sql_priv.h"
 #include "unireg.h"
 #include "sql_base.h"
-#include "sql_string.h"
 #include "sql_parse.h"                          // check_access
 #ifdef HAVE_REPLICATION
 

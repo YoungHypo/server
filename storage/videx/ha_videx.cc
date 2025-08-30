@@ -71,6 +71,7 @@ size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *ou
  int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* thd) {
 	// Set DEBUG_SKIP_HTTP enabled for performance testing using mocked values.
 	const char *debug_skip_http = THDVAR(thd, debug_skip_http);
+	// If set to the string "True", it skips the HTTP request.
 	if (debug_skip_http && strcmp(debug_skip_http, "True") == 0) {
 		return 1;
 	}
