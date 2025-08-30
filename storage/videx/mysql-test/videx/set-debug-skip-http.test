@@ -13,8 +13,8 @@ CREATE TABLE `part` (
   PRIMARY KEY (`P_PARTKEY`)
 ) ENGINE=VIDEX;
 
-SET @DEBUG_SKIP_HTTP='True';
+SET SESSION videx_debug_skip_http = 'True';
 
-SELECT @DEBUG_SKIP_HTTP;
+SHOW STATUS LIKE 'videx_variables';
 
 EXPLAIN SELECT COUNT(*) from part;

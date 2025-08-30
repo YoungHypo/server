@@ -347,42 +347,6 @@ int get_user_var_int(const char *name,
   return 0;
 }
 
-int get_user_var_str(const char *name, char *value, unsigned long len,
-                     unsigned int precision, int *null_value)
-{
-  bool null_val;
-  String tmp;
-  user_var_entry *entry=
-    (user_var_entry*) my_hash_search(&current_thd->user_vars,
-                                  (uchar*) name, strlen(name));
-  if (!entry)
-    return 1;
-  
-  if (entry->val_str(&null_val, &tmp, precision))
-  {
-    if (null_val)
-    {
-      if (null_value)
-        *null_value= 1;
-      return 0;
-    }
-    
-    // Copy string to buffer, ensuring we don't overflow
-    unsigned long copy_len = MY_MIN(len - 1, tmp.length());
-    memcpy(value, tmp.ptr(), copy_len);
-    value[copy_len] = '\0';
-    
-    if (null_value)
-      *null_value= 0;
-    return 0;
-  }
-  
-  // Error occurred
-  if (null_value)
-    *null_value= 1;
-  return 1;
-}
-
 inline bool is_semi_sync_slave()
 {
   int null_value;

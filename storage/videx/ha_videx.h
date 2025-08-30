@@ -193,5 +193,3 @@ public:
 	/** If mysql has locked with external_lock() */
 	bool m_mysql_has_locked;
 };
-
-typedef float rec_per_key_t;

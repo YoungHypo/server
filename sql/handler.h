@@ -577,7 +577,6 @@ enum legacy_db_type
   DB_TYPE_TOKUDB=43, /* disabled in MariaDB Server 10.5, removed in 10.6 */
   DB_TYPE_SEQUENCE=44,
   DB_TYPE_FIRST_DYNAMIC=45,
-  DB_TYPE_VIDEX=46,
   DB_TYPE_DEFAULT=127 // Must be last
 };
 /*

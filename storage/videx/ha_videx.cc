@@ -22,6 +22,28 @@
 
 #include "ha_videx.h"
 
+static MYSQL_THDVAR_STR(debug_skip_http, 
+	PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+	"Skip HTTP requests for debugging (True/False)",
+	nullptr, nullptr, "False");
+
+static MYSQL_THDVAR_STR(server_ip,
+	PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+	"VIDEX server address (host:port)",
+	nullptr, nullptr, "127.0.0.1:5001");
+
+static MYSQL_THDVAR_STR(options,
+	PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
+	"VIDEX connection options (JSON format)",
+	nullptr, nullptr, "{}");
+
+static struct st_mysql_sys_var* videx_system_variables[] = {
+    MYSQL_SYSVAR(debug_skip_http),
+    MYSQL_SYSVAR(server_ip),
+    MYSQL_SYSVAR(options),
+    NULL
+};
+
 /**
  * Write callback function for cURL.
  *
@@ -48,25 +70,24 @@ size_t write_callback(void *contents, size_t size, size_t nmemb, std::string *ou
  */
  int ask_from_videx_http(VidexJsonItem &request, VidexStringMap &res_json, THD* thd) {
 	// Set DEBUG_SKIP_HTTP enabled for performance testing using mocked values.
-	char debug_skip_http[100];  // Buffer to hold the user variable value
-	int is_null;
-	if (get_user_var_str("DEBUG_SKIP_HTTP", debug_skip_http, sizeof(debug_skip_http), 0, &is_null) == 0){
-	  // If set to the string "True", it skips the HTTP request.
-	  if (strcmp(debug_skip_http, "True") == 0) {
-		  return 1;
-	  }
+	const char *debug_skip_http = THDVAR(thd, debug_skip_http);
+	if (debug_skip_http && strcmp(debug_skip_http, "True") == 0) {
+		return 1;
 	}
 
 	// Read the server address and change the host IP.
 	const char *host_ip = "127.0.0.1:5001";
-	char value[1000];  // Buffer to hold the value of the user variable
-	
-	if (get_user_var_str("VIDEX_SERVER", value, sizeof(value), 0, &is_null) == 0)
-	  host_ip = value;
-	const char *videx_options = "{}";
-	char option_value[1000];
-	if (get_user_var_str("VIDEX_OPTIONS", option_value, sizeof(option_value), 0, &is_null) == 0)
-	  videx_options = option_value;
+	const char *videx_server = THDVAR(thd, server_ip);
+	if (videx_server) {
+		host_ip = videx_server;
+	}
+
+	// Read the options and change the options.
+	const char *videx_options = THDVAR(thd, options);
+	if (!videx_options) {
+		videx_options = "{}";
+	}
+
 	std::cout << "VIDEX OPTIONS: " << videx_options << " IP: " << host_ip << std::endl;
 	request.add_property("videx_options", videx_options);
   
@@ -209,7 +230,6 @@ static int videx_init(void *p)
 
 	videx_hton= static_cast<handlerton*>(p);
 
-	videx_hton->db_type= DB_TYPE_VIDEX;
 	videx_hton->create=  videx_create_handler;
 	videx_hton->flags= HTON_SUPPORTS_EXTENDED_KEYS | HTON_SUPPORTS_FOREIGN_KEYS |
 		HTON_NATIVE_SYS_VERSIONING | HTON_WSREP_REPLICATION |
@@ -911,26 +931,28 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 struct st_mysql_storage_engine videx_storage_engine=
 { MYSQL_HANDLERTON_INTERFACE_VERSION };
 
-static struct st_mysql_sys_var* videx_system_variables[]= {
-	NULL
-};
-
 static int show_func_videx(MYSQL_THD thd, struct st_mysql_show_var *var,
 							 char *buf)
 {
 	var->type= SHOW_CHAR;
-	var->value= buf; // it's of SHOW_VAR_FUNC_BUFF_SIZE bytes
+	var->value= buf;
+
+	const char *debug_skip_http = THDVAR(thd, debug_skip_http);
+	const char *videx_server = THDVAR(thd, server_ip);
+	const char *videx_options = THDVAR(thd, options);
+
+	snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
+		"debug_skip_http: %s, server_ip: %s, options: %s",
+		debug_skip_http, videx_server, videx_options);
+
 	return 0;
 }
 
-static struct st_mysql_show_var func_status[]=
+static struct st_mysql_show_var videx_func_status[]=
 {
-	{"func_videx",  (char *)show_func_videx, SHOW_SIMPLE_FUNC},
+	{"variables",  (char *)show_func_videx, SHOW_SIMPLE_FUNC},
 	{0,0,SHOW_UNDEF}
 };
-
-struct st_mysql_daemon unusable_videx=
-{ MYSQL_DAEMON_INTERFACE_VERSION };
 
 maria_declare_plugin(videx)
 {
@@ -943,7 +965,7 @@ maria_declare_plugin(videx)
 	videx_init,                            		/* Plugin Init */
 	NULL,                                       /* Plugin Deinit */
 	0x0001,                                     /* version number (0.1) */
-	func_status,                                /* status variables */
+	videx_func_status,                                /* status variables */
 	videx_system_variables,                     /* system variables */
 	"0.1",                                      /* string version */
 	MariaDB_PLUGIN_MATURITY_EXPERIMENTAL        /* maturity */
