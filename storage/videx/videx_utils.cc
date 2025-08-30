@@ -20,72 +20,16 @@
   along with this program; if not, write to the Free Software
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "videx_log_utils.h"
+#include "videx_utils.h"
 #include <mysql/service_thd_alloc.h>
 
 /**
 Return printable field name; MariaDB 11.0 lacks functional index names.
 */
 
-const char *get_field_name_or_expression(THD *, const Field *field)
+const char *get_field_name_or_expression(const Field *field)
 {
   return field->field_name.str;
-}
-
-VidexLogUtils videx_log_ins;
-
-/**
-Mark unexpected call-sites for debugging; prints a short message.
-*/
-
-void VidexLogUtils::markPassbyUnexpected(const std::string &func,
-                                         const std::string &file,
-                                         const int line)
-{
-  markHaFuncPassby(func, file, line, "NOOOO!", true);
-}
-
-/**
-Explicitly suppress logging for known-irrelevant call paths during EXPLAIN.
-*/
-
-void VidexLogUtils::NotMarkPassby(const std::string &, const std::string &,
-                                  const int)
-{
-  // For things that are explicitly known to be unrelated to the query but will
-  // be used during explain, use this function. Actually, nothing is printed.
-  return;
-}
-
-/**
-Generic passby logger with optional message and silence flag.
-*/
-
-void VidexLogUtils::markHaFuncPassby(const std::string &func,
-                                     const std::string &file, const int line,
-                                     const std::string &others, bool silent)
-{
-  count++;
-  if (silent)
-  {
-    return;
-  }
-  std::stringstream ss;
-  ss << "VIDEX_PASSBY[" << count << "]<" << this->tag << "> ";
-  if (!others.empty())
-  {
-    ss << "___MSG:{" << others << "} ";
-  }
-
-  ss << " ____ " << func << " ____ File: " << file << ":" << line;
-  if (enable_cout)
-  {
-    DBUG_PRINT("info", ("%s", ss.str().c_str()));
-  }
-  if (enable_trace)
-  {
-    // TODO not support for now, need to set thd and initialize trace_object
-  }
 }
 
 /**
@@ -260,8 +204,7 @@ inline void subha_append_range(String *out, const KEY_PART_INFO *key_part,
   tmp_str.length(0);
   std::stringstream ss;
 
-  const char *field_or_expr=
-      get_field_name_or_expression(current_thd, key_part->field);
+  const char *field_or_expr=get_field_name_or_expression(key_part->field);
   out->append(field_or_expr, strlen(field_or_expr));
   range_json->add_property("column", field_or_expr);
 
@@ -322,25 +265,9 @@ void subha_parse_key_range(const key_range *key_range, const KEY *index,
   }
 }
 
-/**
-Logs and serializes min/max key bounds for a given index into `req_json`.
-Also prints a concise human-readable summary for debugging.
-
-@param func Function name for logging.
-@param file Source file name for logging.
-@param line Line number for logging.
-@param min_key Minimum key range.
-@param max_key Maximum key range.
-@param key Index key information.
-@param req_json JSON object to store serialized key range.
-*/
-
-void VidexLogUtils::markRecordInRange([[maybe_unused]] const std::string &func,
-                                      [[maybe_unused]] const std::string &file,
-                                      [[maybe_unused]] const int line,
-                                      const key_range *min_key,
-                                      const key_range *max_key, KEY *key,
-                                      VidexJsonItem *req_json)
+void serializeKeyRangeToJson(const key_range *min_key,
+                             const key_range *max_key, KEY *key,
+                             VidexJsonItem *req_json)
 {
   String range_info;
   range_info.set_charset(system_charset_info);

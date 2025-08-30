@@ -29,9 +29,8 @@
 #include <sql_class.h>
 #include <my_sys.h>
 #include "scope.h"
-#include <my_service_manager.h>
 #include "videx_json_item.h"
-#include "videx_log_utils.h"
+#include "videx_utils.h"
 #include <replication.h>
 #include <curl/curl.h>
 
@@ -671,8 +670,7 @@ ha_rows ha_videx::records_in_range(uint keynr, const key_range *min_key,
 
   VidexJsonItem request_item= construct_request(
       table->s->db.str, table->s->table_name.str, __PRETTY_FUNCTION__);
-  videx_log_ins.markRecordInRange(FUNC_FILE_LINE, min_key, max_key, key,
-                                  &request_item);
+  serializeKeyRangeToJson(min_key, max_key, key, &request_item);
 
   std::string n_rows_str;
   ha_rows n_rows;
