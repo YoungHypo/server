@@ -14,6 +14,8 @@ CREATE TABLE `orders` (
   KEY `ORDERS_FK1` (`O_CUSTKEY`)
 ) ENGINE=VIDEX;
 
+SET SESSION videx_debug_skip_http = 1;
+
 SHOW CREATE TABLE orders;
 
 CREATE INDEX idx_orders_status_date ON orders (O_ORDERSTATUS, O_ORDERDATE);

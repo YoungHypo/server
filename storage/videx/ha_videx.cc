@@ -798,7 +798,6 @@ class Item *ha_videx::idx_cond_push(uint keyno, class Item *idx_cond)
 int ha_videx::info_low(uint flag, bool is_analyze)
 {
   uint64_t n_rows;
-  char path[FN_REFLEN];
 
   DBUG_ENTER("ha_videx::info_low");
   DEBUG_SYNC_C("ha_videx_info_low");
@@ -883,11 +882,6 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 
   if (flag & HA_STATUS_CONST)
   {
-    snprintf(path, sizeof(path), "%s/%s%s", mysql_data_home,
-             table->s->normalized_path.str, reg_ext);
-
-    unpack_filename(path, path);
-
     for (uint i= 0; i < table->s->keys; i++)
     {
       ulong j;
@@ -931,27 +925,6 @@ int ha_videx::info_low(uint flag, bool is_analyze)
 struct st_mysql_storage_engine videx_storage_engine= {
     MYSQL_HANDLERTON_INTERFACE_VERSION};
 
-static int show_func_videx(MYSQL_THD thd, struct st_mysql_show_var *var,
-                           char *buf)
-{
-  var->type= SHOW_CHAR;
-  var->value= buf;
-
-  bool debug_skip_http= THDVAR(thd, debug_skip_http);
-  const char *videx_server= THDVAR(thd, server_ip);
-  const char *videx_options= THDVAR(thd, options);
-
-  snprintf(buf, SHOW_VAR_FUNC_BUFF_SIZE,
-           "debug_skip_http: %s, server_ip: %s, options: %s",
-           debug_skip_http ? "TRUE" : "FALSE", videx_server, videx_options);
-
-  return 0;
-}
-
-static struct st_mysql_show_var videx_func_status[]= {
-    {"variables", (char *) show_func_videx, SHOW_SIMPLE_FUNC},
-    {0, 0, SHOW_UNDEF}};
-
 maria_declare_plugin(videx){
     MYSQL_STORAGE_ENGINE_PLUGIN,
     &videx_storage_engine,
@@ -962,7 +935,7 @@ maria_declare_plugin(videx){
     videx_init,                          /* Plugin Init */
     NULL,                                /* Plugin Deinit */
     0x0001,                              /* version number (0.1) */
-    videx_func_status,                   /* status variables */
+    NULL,                   /* status variables */
     videx_system_variables,              /* system variables */
     "0.1",                               /* string version */
     MariaDB_PLUGIN_MATURITY_EXPERIMENTAL /* maturity */
